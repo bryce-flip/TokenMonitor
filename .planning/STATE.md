@@ -3,12 +3,11 @@ gsd_state_version: "1.0"
 milestone: v1.0
 current_phase: 2
 current_phase_name: Reliable Canonical Indexing
-status: planning
+status: Phase 1 shipped — pushed to origin/main (56e3961..5bcf4f4)
 stopped_at: Phase 1 complete, ready to plan Phase 2
-last_updated: "2026-10-08T12:45:22.336Z"
+last_updated: "2026-10-08T12:47:50.290Z"
 last_activity: 2026-10-08
-last_activity_desc: Phase 1 complete, transitioned to Phase 2
-state_head: a1487e594b2fbcf3091e03bf4037f30633384cfd
+state_head: 5bcf4f4ad08c2e83fb9bc500adafa28f2fb93ce8
 progress:
   total_phases: 4
   completed_phases: 1
@@ -30,8 +29,8 @@ See: .planning/PROJECT.md (updated 2026-10-08)
 
 Phase: 2 — Reliable Canonical Indexing
 Plan: Not started
-Status: Ready to plan
-Last activity: 2026-10-08 — Phase 1 complete, transitioned to Phase 2
+Status: Phase 1 shipped — pushed to origin/main (56e3961..5bcf4f4)
+Last activity: 2026-10-08
 
 Progress: [███░░░░░░░] 25%
 
