@@ -100,16 +100,17 @@ func (s *Store) InsertEvents(ctx context.Context, rows []EventRow) error {
 	return nil
 }
 
-// Inspect returns up to limit rows in deterministic block_number then
-// log_index order. FINAL is mandatory: ReplacingMergeTree background
-// replacement is eventual.
-func (s *Store) Inspect(ctx context.Context, limit uint32) ([]EventRow, error) {
-	rows, err := s.conn.Query(ctx, fmt.Sprintf(`
+// Inspect returns up to limit rows in the inclusive block range [from, to],
+// newest first (block_number then log_index descending). FINAL is mandatory:
+// ReplacingMergeTree background replacement is eventual.
+func (s *Store) Inspect(ctx context.Context, from, to uint64, limit uint32) ([]EventRow, error) {
+	rows, err := s.conn.Query(ctx, `
 		SELECT chain, token, contract_address, block_number, block_hash, block_time,
 		       tx_hash, log_index, event_type, from_address, to_address, raw_amount
 		FROM stablecoin_events FINAL
-		ORDER BY block_number, log_index
-		LIMIT %d`, limit))
+		WHERE block_number BETWEEN ? AND ?
+		ORDER BY block_number DESC, log_index DESC
+		LIMIT ?`, from, to, limit)
 	if err != nil {
 		return nil, fmt.Errorf("clickhouse inspect: %w", err)
 	}

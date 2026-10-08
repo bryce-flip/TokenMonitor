@@ -116,8 +116,9 @@ func TestReplayDuplicateInsertKeepsFinalCountAtOne(t *testing.T) {
 	}
 }
 
-// TestInspectOrderedByBlockThenLogIndex requires deterministic block_number
-// then log_index ordering across two inserted blocks.
+// TestInspectOrderedByBlockThenLogIndex requires deterministic newest-first
+// block_number then log_index ordering within the inspected range, and that
+// rows outside the range are excluded.
 func TestInspectOrderedByBlockThenLogIndex(t *testing.T) {
 	store := openStore(t)
 	ctx := context.Background()
@@ -128,18 +129,22 @@ func TestInspectOrderedByBlockThenLogIndex(t *testing.T) {
 		testRow(100, 3, "13", big.NewInt(3)),
 		testRow(200, 0, "14", big.NewInt(4)),
 	}
-	if err := store.InsertEvents(ctx, rows); err != nil {
+	outside := testRow(300, 0, "15", big.NewInt(5))
+	if err := store.InsertEvents(ctx, append(rows, outside)); err != nil {
 		t.Fatalf("insert: %v", err)
 	}
-	got, err := store.Inspect(ctx, 1000)
+	got, err := store.Inspect(ctx, 100, 200, 1000)
 	if err != nil {
 		t.Fatalf("inspect: %v", err)
 	}
-	// Expected ascending order of this subtest's rows.
-	wantOrder := []string{rows[2].TxHash, rows[1].TxHash, rows[3].TxHash, rows[0].TxHash}
+	// Expected newest-first (descending) order of this subtest's rows.
+	wantOrder := []string{rows[0].TxHash, rows[3].TxHash, rows[1].TxHash, rows[2].TxHash}
 	pos := map[string]int{}
 	for i, r := range got {
 		pos[r.TxHash] = i
+	}
+	if p, ok := pos[outside.TxHash]; ok {
+		t.Errorf("row %s at position %d is outside the inspected range 100-200 but appeared in Inspect output", outside.TxHash, p)
 	}
 	last := -1
 	for _, tx := range wantOrder {
@@ -148,7 +153,7 @@ func TestInspectOrderedByBlockThenLogIndex(t *testing.T) {
 			t.Fatalf("row %s missing from Inspect output", tx)
 		}
 		if p <= last {
-			t.Errorf("row %s at position %d breaks block_number,log_index order after position %d", tx, p, last)
+			t.Errorf("row %s at position %d breaks descending block_number,log_index order after position %d", tx, p, last)
 		}
 		last = p
 	}

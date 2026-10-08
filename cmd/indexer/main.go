@@ -153,7 +153,7 @@ func main() {
 		slog.Error("storage", "err", err)
 		os.Exit(1)
 	}
-	inspected, err := store.Inspect(ctx, 20)
+	inspected, err := store.Inspect(ctx, from, to, 20)
 	if err != nil {
 		slog.Error("storage", "err", err)
 		os.Exit(1)
