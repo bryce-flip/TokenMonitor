@@ -119,12 +119,17 @@ func main() {
 			continue
 		}
 		h := headers[tl.log.BlockNumber]
+		if h.Hash() != tl.log.BlockHash {
+			slog.Error("reorg detected: header hash does not match the log's block hash; re-run the range",
+				"block", tl.log.BlockNumber, "header_hash", h.Hash().Hex(), "log_block_hash", tl.log.BlockHash.Hex())
+			os.Exit(1)
+		}
 		rows = append(rows, storage.EventRow{
 			Chain:           chain,
 			Token:           ev.Token,
 			ContractAddress: strings.ToLower(common.HexToAddress(tl.token.Contract).Hex()),
 			BlockNumber:     tl.log.BlockNumber,
-			BlockHash:       h.Hash().Hex(),
+			BlockHash:       tl.log.BlockHash.Hex(), // the hash the provider attests emitted this log
 			BlockTime:       time.Unix(int64(h.Time), 0).UTC(),
 			TxHash:          tl.log.TxHash.Hex(),
 			LogIndex:        uint32(tl.log.Index),
