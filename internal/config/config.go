@@ -42,8 +42,16 @@ func Load(path string) (*Config, error) {
 	return &cfg, nil
 }
 
+// supportedSymbols mirrors the token set indexer.SupplyTopics classifies
+// (USDT and USDC, requirements.md §2-3). It lives here because this package
+// cannot import internal/indexer (which imports config). A symbol outside
+// this set has no fetch/decode path, so it must fail at startup instead of
+// being silently skipped mid-run.
+var supportedSymbols = map[string]bool{"USDT": true, "USDC": true}
+
 // Validate enforces the Phase 1 invariants: Mainnet only, a positive
-// confirmation depth, at least one well-formed and uniquely named token.
+// confirmation depth, at least one well-formed, supported-symbol, uniquely
+// named token.
 func (c *Config) Validate() error {
 	if c.ChainID != 1 {
 		return fmt.Errorf("config: chain_id must be 1 (Ethereum Mainnet), got %d", c.ChainID)
@@ -56,6 +64,12 @@ func (c *Config) Validate() error {
 	}
 	seen := make(map[string]bool, len(c.Tokens))
 	for _, t := range c.Tokens {
+		if strings.TrimSpace(t.Symbol) == "" {
+			return fmt.Errorf("config: token with contract %s has an empty symbol", t.Contract)
+		}
+		if !supportedSymbols[t.Symbol] {
+			return fmt.Errorf("config: token symbol %q (contract %s) is not supported; supported symbols: USDT, USDC", t.Symbol, t.Contract)
+		}
 		if seen[t.Symbol] {
 			return fmt.Errorf("config: duplicate token symbol %q", t.Symbol)
 		}
