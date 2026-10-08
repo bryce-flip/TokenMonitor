@@ -23,7 +23,8 @@ awaiting: user response
 
 ### 1. Cold Start Smoke Test
 expected: Kill any running service, clear ephemeral state, start from scratch — indexer boots without errors, migrations apply, fail-fast probe behaves.
-result: [pending]
+result: pass
+source: automated (orchestrator run 2026-10-08: container recreated 26.8.20.9; env -u ETH_RPC_URL run exits 1 naming ETH_RPC_URL; live zero-log range exits 0 with empty range-scoped inspect; SHOW TABLES confirms idempotent schema; go test ./... green)
 
 ### 2. Bounded walking-skeleton command (config, probe, ingest)
 expected: Bounded command loads/validates config, fails fast without ETH_RPC_URL, runs the D-02 probe before any fetch, zero-log range exits 0.
@@ -51,7 +52,8 @@ coverage_id: D4
 
 ### 6. README operator runbook walk-through (verifier human item 1)
 expected: Follow README.md start to finish as a new operator: prerequisites, env vars, ClickHouse startup, bounded ingest command, inspection SQL, test commands. Every step works as written with no gaps.
-result: [pending]
+result: pass
+reported: user approved README walkthrough via UAT gate
 
 ### 7. RPC credential in error logs — accept or fix (verifier human item 2)
 expected: Decide: `%w`-wrapped net/http error chains in internal/rpc can print the full key-bearing RPC URL in runtime error logs (tracked files are clean; only test output is scrubbed — 01-02-SUMMARY Deviation 4). Accept as-is for Phase 1, or ask for a fix (redact to scheme://host in error rendering).
@@ -65,12 +67,16 @@ result: [pending]
 expected: Decide: ROADMAP Phase 1 goal fails user-story validation (the validated story lives in the PLAN objectives). Optionally run /gsd-mvp-phase 1 to reformat, or accept the roadmap wording as-is.
 result: [pending]
 
+### 10. WR-01 reorg-mismatch guard (verifier human item 5, new after fixes)
+expected: Decide: the fail-loud h.Hash() != log.BlockHash branch is only observable under a live Mainnet reorg. Accept by code inspection (happy path live-verified), or defer explicit reorg testing to Phase 2 (SYNC-05).
+result: [pending]
+
 ## Summary
 
-total: 9
-passed: 4
+total: 10
+passed: 6
 issues: 0
-pending: 5
+pending: 4
 skipped: 0
 blocked: 0
 
