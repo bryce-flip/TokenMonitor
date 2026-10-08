@@ -14,9 +14,9 @@ The user-provided [source specification](../requirements.md) defines the intende
 
 ### Supply Events
 
-- [ ] **EVENT-01**: Indexer recognizes USDT `Issue` as mint and `Redeem` and `DestroyedBlackFunds` as distinct supply-decrease reasons, verified against deployed-contract transactions.
-- [ ] **EVENT-02**: Indexer recognizes USDC mint and burn from zero-address `Transfer` logs, verified against deployed-contract transactions, without also counting paired `Mint`/`Burn` logs.
-- [ ] **EVENT-03**: Operator can inspect each stored supply event's token, source event, direction/reason, exact raw amount, block number/hash/time, transaction hash, and log index; ordinary transfers do not affect issuance.
+- [x] **EVENT-01**: Indexer recognizes USDT `Issue` as mint and `Redeem` and `DestroyedBlackFunds` as distinct supply-decrease reasons, verified against deployed-contract transactions.
+- [x] **EVENT-02**: Indexer recognizes USDC mint and burn from zero-address `Transfer` logs, verified against deployed-contract transactions, without also counting paired `Mint`/`Burn` logs.
+- [x] **EVENT-03**: Operator can inspect each stored supply event's token, source event, direction/reason, exact raw amount, block number/hash/time, transaction hash, and log index; ordinary transfers do not affect issuance.
 
 ### Reliable Indexing
 
@@ -70,9 +70,9 @@ The user-provided [source specification](../requirements.md) defines the intende
 |-------------|-------|--------|
 | CHAIN-01 | Phase 1 | Complete |
 | CHAIN-02 | Phase 3 | Pending |
-| EVENT-01 | Phase 1 | Pending |
-| EVENT-02 | Phase 1 | Pending |
-| EVENT-03 | Phase 1 | Pending |
+| EVENT-01 | Phase 1 | Complete |
+| EVENT-02 | Phase 1 | Complete |
+| EVENT-03 | Phase 1 | Complete |
 | SYNC-01 | Phase 2 | Pending |
 | SYNC-02 | Phase 2 | Pending |
 | SYNC-03 | Phase 2 | Pending |

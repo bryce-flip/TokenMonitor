@@ -3,17 +3,17 @@ gsd_state_version: "1.0"
 milestone: v1.0
 current_phase: 1
 current_phase_name: Live Supply Event Path
-status: executing
-stopped_at: Completed 01-01-PLAN.md
-last_updated: "2026-10-08T10:23:24.284Z"
+status: verifying
+stopped_at: Completed 01-02-PLAN.md
+last_updated: "2026-10-08T11:14:55.516Z"
 last_activity: 2026-10-08
 last_activity_desc: Phase 1 execution started
-state_head: 75f060c579368cd601a8d60ea40e6790a8509ec5
+state_head: e82855cdf7c7cf9ba4029665ea16769bfbcacccc
 progress:
   total_phases: 4
   completed_phases: 0
   total_plans: 2
-  completed_plans: 1
+  completed_plans: 2
 ---
 
 # Project State
@@ -29,7 +29,7 @@ See: .planning/PROJECT.md (updated 2026-10-08)
 
 Phase: 1 (Live Supply Event Path) — EXECUTING
 Plan: 2 of 2
-Status: Ready to execute
+Status: Phase complete — ready for verification
 Last activity: 2026-10-08 — Phase 1 execution started
 
 Progress: [░░░░░░░░░░] 0%
@@ -56,6 +56,7 @@ Progress: [░░░░░░░░░░] 0%
 | Plan | Duration | Tasks | Files |
 |------|----------|-------|-------|
 | Phase 01 P01 | 31min | 3 tasks | 12 files |
+| Phase 01 P02 | 26min | 2 tasks | 4 files |
 
 ## Accumulated Context
 
@@ -65,6 +66,9 @@ Decisions are logged in PROJECT.md. Phase 1 proves real RPC logs through token-s
 - [Phase 01]: 01-01: stdlib JSON config + env lookups (no YAML dependency) per research recommendation
 - [Phase 01]: 01-01: stablecoin_events stores raw_amount UInt256 only; Decimal(38,6) scaled column deferred to Phase 4
 - [Phase 01]: 01-01: ReplacingMergeTree(created_at) on full event identity + FINAL reads make range re-ingest idempotent; ClickHouse pinned to concrete 26.8.20.9 with loopback-only binding
+- [Phase 01]: 01-02: free-tier rate-limit tolerance implemented as bounded retry in internal/rpc (probe, fetch, header) after live 429/-32005 bursts deterministically blocked ingest
+- [Phase 01]: 01-02: live USDC row-count assertion is per fixture receipt plus a block-wide 1:1 zero-address-Transfer invariant (block 0x1638e19 carries unrelated extra mints)
+- [Phase 01]: 01-02: smoke window sized to provider result cap — Infura rejects eth_getLogs over 10k results, so ~40 blocks for USDC; documented in README, chunked fetching deferred to continuous sync
 
 ### Pending Todos
 
@@ -83,6 +87,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-10-08T10:23:24.248Z
-Stopped at: Completed 01-01-PLAN.md
+Last session: 2026-10-08T11:14:55.475Z
+Stopped at: Completed 01-02-PLAN.md
 Resume file: None
