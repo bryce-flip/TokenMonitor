@@ -48,7 +48,7 @@ created: "2026-10-08"
 
 ## Wave 0 Requirements
 
-- [ ] `internal/decoder/decoder_test.go` — fixture tests for REQ-EVENT-01/EVENT-02 (pinned Mainnet receipts)
+- [ ] `internal/indexer/decoder_test.go` — fixture tests for REQ-EVENT-01/EVENT-02 (pinned Mainnet receipts)
 - [ ] `go test ./...` — runnable with zero test files failing
 
 *Existing infrastructure: none — greenfield Go module.*
