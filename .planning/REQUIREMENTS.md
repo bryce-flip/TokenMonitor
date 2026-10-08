@@ -66,7 +66,30 @@ The user-provided [source specification](../requirements.md) defines the intende
 
 ## Traceability
 
-Roadmap creation maps each v1 requirement to exactly one phase.
+| Requirement | Phase | Status |
+|-------------|-------|--------|
+| CHAIN-01 | Phase 1 | Pending |
+| CHAIN-02 | Phase 3 | Pending |
+| EVENT-01 | Phase 1 | Pending |
+| EVENT-02 | Phase 1 | Pending |
+| EVENT-03 | Phase 1 | Pending |
+| SYNC-01 | Phase 2 | Pending |
+| SYNC-02 | Phase 2 | Pending |
+| SYNC-03 | Phase 2 | Pending |
+| SYNC-04 | Phase 2 | Pending |
+| SYNC-05 | Phase 2 | Pending |
+| SUPP-01 | Phase 3 | Pending |
+| SUPP-02 | Phase 3 | Pending |
+| SUPP-03 | Phase 3 | Pending |
+| SUPP-04 | Phase 3 | Pending |
+| METR-01 | Phase 4 | Pending |
+| METR-02 | Phase 4 | Pending |
+| METR-03 | Phase 4 | Pending |
+| DASH-01 | Phase 4 | Pending |
+| DASH-02 | Phase 4 | Pending |
+| DASH-03 | Phase 4 | Pending |
+| OPER-01 | Phase 4 | Pending |
+| OPER-02 | Phase 4 | Pending |
 
 ---
 *Requirements defined: 2026-10-08*
