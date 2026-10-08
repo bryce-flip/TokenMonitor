@@ -6,7 +6,7 @@ The v1.0 MVP first proves a real Ethereum Mainnet USDT/USDC event path into Clic
 
 ## Phases
 
-- [ ] **Phase 1: Live Supply Event Path** - Store correctly classified USDT and USDC supply events from real Ethereum RPC logs in ClickHouse.
+- [x] **Phase 1: Live Supply Event Path** - Store correctly classified USDT and USDC supply events from real Ethereum RPC logs in ClickHouse. (completed 2026-10-08)
 - [ ] **Phase 2: Reliable Canonical Indexing** - Continue indexing through eligible blocks with restart, replay, and reorg safety.
 - [ ] **Phase 3: Anchored Supply Reconciliation** - Compare event-derived supply with each contract's total supply at the same canonical block.
 - [ ] **Phase 4: Issuance and Operator Views** - Present trustworthy supply and issuance in Grafana with Compose startup and clear health signals.
@@ -25,7 +25,7 @@ The v1.0 MVP first proves a real Ethereum Mainnet USDT/USDC event path into Clic
   3. Stored logs from deployed USDC transactions show zero-address `Transfer` mint and burn once each, without double-counting paired `Mint` or `Burn` events.
   4. Operator can inspect each stored event's exact raw amount and chain provenance; ordinary transfers do not appear as supply changes.
 
-**Plans**: 2/2 plans executed
+**Plans**: 2/2 plans complete
 
 Plans:
 **Wave 1**
@@ -82,7 +82,7 @@ Plans:
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Live Supply Event Path | 2/2 | Planning complete | - |
+| 1. Live Supply Event Path | 2/2 | Complete    | 2026-10-08 |
 | 2. Reliable Canonical Indexing | 0/TBD | Not started | - |
 | 3. Anchored Supply Reconciliation | 0/TBD | Not started | - |
 | 4. Issuance and Operator Views | 0/TBD | Not started | - |
