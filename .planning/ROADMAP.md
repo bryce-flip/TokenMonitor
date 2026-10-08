@@ -14,6 +14,7 @@ The v1.0 MVP first proves a real Ethereum Mainnet USDT/USDC event path into Clic
 ## Phase Details
 
 ### Phase 1: Live Supply Event Path
+
 **Goal**: Operators can ingest and inspect correctly classified, real USDT and USDC supply-changing logs in ClickHouse.
 **Mode:** mvp
 **Depends on**: Nothing (first phase)
@@ -23,13 +24,18 @@ The v1.0 MVP first proves a real Ethereum Mainnet USDT/USDC event path into Clic
   2. Stored logs from deployed USDT transactions show `Issue` as mint and `Redeem` and `DestroyedBlackFunds` as distinct supply decreases; zero-address `Transfer` is not misclassified as USDT issuance.
   3. Stored logs from deployed USDC transactions show zero-address `Transfer` mint and burn once each, without double-counting paired `Mint` or `Burn` events.
   4. Operator can inspect each stored event's exact raw amount and chain provenance; ordinary transfers do not appear as supply changes.
+
 **Plans**: 2 plans
 
 Plans:
+**Wave 1**
 - [ ] 01-01-PLAN.md — Walking skeleton: config, D-02 provider probe, bounded getLogs, token-specific decode, exact ClickHouse insert, inspection; offline fixture and storage exactness tests
+
+**Wave 2** *(blocked on Wave 1 completion)*
 - [ ] 01-02-PLAN.md — Live fixture proof through the operator's RPC URL, operator runbook (README), bounded recent-range full-path smoke
 
 ### Phase 2: Reliable Canonical Indexing
+
 **Goal**: Operators can trust continuous event history across RPC failures, restarts, duplicate reads, and short chain reorganizations.
 **Mode:** mvp
 **Depends on**: Phase 1
@@ -39,9 +45,11 @@ Plans:
   2. A transient RPC failure or rate limit retries the same range; restart resumes from a durable block-number-and-hash checkpoint only after that range's events were accepted.
   3. Replaying a processed range leaves logical event counts and issuance sums unchanged, including before ClickHouse background merges finish.
   4. A checkpoint hash mismatch stops ordinary reporting until a verified rewind excludes orphaned events and rebuilds any affected derived data.
+
 **Plans**: TBD
 
 ### Phase 3: Anchored Supply Reconciliation
+
 **Goal**: Operators can distinguish accurate block-aligned supply from unavailable, stale, or mismatched supply.
 **Mode:** mvp
 **Depends on**: Phase 2
@@ -51,9 +59,11 @@ Plans:
   2. Operator can inspect a verified per-token `totalSupply()` anchor at a named canonical block and calculated supply from complete subsequent supply events.
   3. Operator can compare exact calculated and contract `totalSupply()` values at the same named canonical block, with the difference and unavailable or stale state shown separately from a mismatch.
   4. A real difference or detected USDT/USDC contract behavior change raises a clear warning without silently resetting the anchor.
+
 **Plans**: TBD
 
 ### Phase 4: Issuance and Operator Views
+
 **Goal**: Operators can monitor supply, issuance, large events, and indexer health from a runnable three-service stack.
 **Mode:** mvp
 **Depends on**: Phase 3
@@ -64,6 +74,7 @@ Plans:
   3. Grafana shows current USDT, USDC, and combined token-unit supply with observed block, time, and freshness state, plus per-token and combined trends over 24-hour, 7-day, 30-day, 90-day, and 1-year ranges where history exists.
   4. Operator can start the Go indexer, ClickHouse, and Grafana with Docker Compose using an external RPC URL; Grafana queries ClickHouse through a read-only account.
   5. Operator can diagnose current and eligible blocks, lag or stalled sync, processed blocks and events, RPC/indexer errors, and supply mismatch from health output and logs.
+
 **Plans**: TBD
 **UI hint**: yes
 
