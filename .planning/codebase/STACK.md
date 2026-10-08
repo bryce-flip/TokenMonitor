@@ -1,5 +1,5 @@
 ---
-last_mapped_commit: 56e39614d8217817733b2b97293be83160ebbf2e
+last_mapped_commit: 75f060c579368cd601a8d60ea40e6790a8509ec5
 last_mapped_at: 2026-10-08
 ---
 # Technology Stack
@@ -20,8 +20,8 @@ last_mapped_at: 2026-10-08
 - Go 1.27.1 is the target declared in `go.mod`; no executable exists yet.
 
 **Package Manager:**
-- Go modules - `go.mod` declares module `TOkenMonitor` and no dependencies.
-- Lockfile: missing (`go.sum` is not present).
+- Go modules - `go.mod` declares module `TOkenMonitor`.
+- Lockfile: `go.sum` committed; `go mod verify` passes.
 
 ## Frameworks
 
@@ -29,7 +29,7 @@ last_mapped_at: 2026-10-08
 - Not detected in `go.mod`; `requirements.md` specifies a Go indexer but no framework.
 
 **Testing:**
-- Not detected; there are no test files or test dependencies in `go.mod`.
+- Go standard `testing` package; offline unit/table tests plus a ClickHouse integration suite gated on `CLICKHOUSE_URL`.
 
 **Build/Dev:**
 - Go toolchain implied by `go.mod`; no `Makefile`, `Dockerfile`, or build script exists.
@@ -38,7 +38,8 @@ last_mapped_at: 2026-10-08
 ## Key Dependencies
 
 **Critical:**
-- None declared in `go.mod`. Ethereum RPC client and ClickHouse client choices remain open.
+- `github.com/ethereum/go-ethereum v1.17.7` — ethclient (FilterLogs, HeaderByNumber, ChainID), common/types.
+- `github.com/ClickHouse/clickhouse-go/v2 v2.48.0` — native-protocol driver (ParseDSN, PrepareBatch, `*big.Int` for UInt256).
 
 **Infrastructure:**
 - Planned in `requirements.md`: external Ethereum Mainnet JSON-RPC provider, ClickHouse, and Grafana. None is configured or implemented.
@@ -47,8 +48,9 @@ last_mapped_at: 2026-10-08
 ## Configuration
 
 **Environment:**
-- No runtime environment configuration exists. `requirements.md` proposes `ETH_RPC_URL` and optional `ETH_WS_URL`; no `.env` file is present.
-- `requirements.md` proposes token contracts, confirmation depth, and alert thresholds in YAML; no configuration file exists.
+- `ETH_RPC_URL` (required at runtime; errors name it when unset), optional `ETH_WS_URL` still unimplemented (spec proposal).
+- `CLICKHOUSE_URL` optional; defaults to `clickhouse://default@127.0.0.1:9000/default` (local container, loopback-bound).
+- Token contracts, confirmation depth live in `config/tokens.json` (JSON, not the spec's proposed YAML).
 
 **Build:**
 - `go.mod` is the only toolchain configuration. No build or lint configuration is present.

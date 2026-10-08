@@ -25,11 +25,11 @@ The v1.0 MVP first proves a real Ethereum Mainnet USDT/USDC event path into Clic
   3. Stored logs from deployed USDC transactions show zero-address `Transfer` mint and burn once each, without double-counting paired `Mint` or `Burn` events.
   4. Operator can inspect each stored event's exact raw amount and chain provenance; ordinary transfers do not appear as supply changes.
 
-**Plans**: 2 plans
+**Plans**: 1/2 plans executed
 
 Plans:
 **Wave 1**
-- [ ] 01-01-PLAN.md — Walking skeleton: config, D-02 provider probe, bounded getLogs, token-specific decode, exact ClickHouse insert, inspection; offline fixture and storage exactness tests
+- [x] 01-01-PLAN.md — Walking skeleton: config, D-02 provider probe, bounded getLogs, token-specific decode, exact ClickHouse insert, inspection; offline fixture and storage exactness tests
 
 **Wave 2** *(blocked on Wave 1 completion)*
 - [ ] 01-02-PLAN.md — Live fixture proof through the operator's RPC URL, operator runbook (README), bounded recent-range full-path smoke
@@ -82,7 +82,7 @@ Plans:
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Live Supply Event Path | 0/2 | Planning complete | - |
+| 1. Live Supply Event Path | 1/2 | Planning complete | - |
 | 2. Reliable Canonical Indexing | 0/TBD | Not started | - |
 | 3. Anchored Supply Reconciliation | 0/TBD | Not started | - |
 | 4. Issuance and Operator Views | 0/TBD | Not started | - |

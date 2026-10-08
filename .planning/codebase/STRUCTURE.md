@@ -1,5 +1,5 @@
 ---
-last_mapped_commit: 56e39614d8217817733b2b97293be83160ebbf2e
+last_mapped_commit: 75f060c579368cd601a8d60ea40e6790a8509ec5
 last_mapped_at: 2026-10-08
 ---
 # Codebase Structure
@@ -10,20 +10,31 @@ last_mapped_at: 2026-10-08
 
 ```text
 TokenMonitor/
-├── go.mod                 # Go module declaration
-├── requirements.md        # MVP specification and proposed layout
+├── go.mod, go.sum         # Go module + pinned dependency lockfile
+├── requirements.md        # MVP specification
+├── cmd/
+│   └── indexer/           # bounded ingest CLI entry point
+├── config/
+│   └── tokens.json        # chain_id, confirmation depth, USDT/USDC contracts
+├── internal/
+│   ├── config/            # JSON load/validate, env lookups, URL redaction
+│   ├── indexer/           # topic0 constants + supply-event decoder (+ tests)
+│   ├── rpc/               # ethclient wrapper: Probe/FetchLogs/Header (+ tests)
+│   └── storage/           # ClickHouse native store (+ integration tests)
+├── migrations/
+│   └── clickhouse.sql     # stablecoin_events DDL (ReplacingMergeTree)
 └── .planning/
     └── codebase/          # Codebase analysis documents
 ```
 
-No `cmd/`, `internal/`, `config/`, `migrations/`, `deployments/`, or test directories are present. Those names occur as proposals in `requirements.md`, section 22.
+`deployments/` (Docker Compose, Grafana) remains a Phase 4 proposal only.
 
 ## Directory Purposes
 
 **Repository root:**
-- Purpose: Holds the module declaration and project requirements.
-- Contains: `go.mod`, `requirements.md`.
-- Key files: `go.mod`, `requirements.md`.
+- Purpose: Module declaration, lockfile, and project requirements.
+- Contains: `go.mod`, `go.sum`, `requirements.md`.
+- Key files: `go.mod`, `go.sum`, `requirements.md`.
 
 **`.planning/codebase/`:**
 - Purpose: Holds generated codebase mapping documents.
@@ -33,17 +44,20 @@ No `cmd/`, `internal/`, `config/`, `migrations/`, `deployments/`, or test direct
 ## Key File Locations
 
 **Entry Points:**
-- Not detected; `requirements.md`, section 22 proposes `cmd/indexer/main.go`.
+- `cmd/indexer/main.go` — bounded ingest command (`-config`, `-from`, `-to`).
 
 **Configuration:**
-- `go.mod`: Module name and Go version.
-- `requirements.md`: Proposed token configuration, RPC environment variables, and confirmation settings; no runtime configuration file exists.
+- `config/tokens.json`: chain_id, confirmation_blocks, token contracts/decimals.
+- `go.mod`/`go.sum`: module `TOkenMonitor`, pinned go-ethereum and clickhouse-go.
+- Runtime env: `ETH_RPC_URL` (required), `CLICKHOUSE_URL` (defaults to `clickhouse://default@127.0.0.1:9000/default`).
 
 **Core Logic:**
-- Not detected; `requirements.md`, section 22 proposes `internal/ethereum/`, `internal/indexer/`, `internal/token/`, `internal/storage/`, and `internal/metrics/`.
+- `internal/indexer/decoder.go`: pinned topic0 constants, `SupplyTopics`, `DecodeSupplyEvent`.
+- `internal/rpc/client.go`: `Probe` (D-02 fail-fast), `FetchLogs`, `Header`.
+- `internal/storage/clickhouse.go`: `EnsureSchema`, `InsertEvents`, `Inspect`.
 
 **Testing:**
-- Not detected; no `*_test.go` files or test configuration exist.
+- `internal/indexer/decoder_test.go`, `internal/rpc/client_test.go` (offline); `internal/storage/clickhouse_test.go` (integration, gated on `CLICKHOUSE_URL`).
 
 ## Naming Conventions
 

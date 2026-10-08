@@ -9,7 +9,7 @@ The user-provided [source specification](../requirements.md) defines the intende
 
 ### Chain and Tokens
 
-- [ ] **CHAIN-01**: Operator can configure an external Ethereum Mainnet HTTP RPC endpoint and the USDT/USDC contract addresses, decimals, and confirmation policy without changing business logic.
+- [x] **CHAIN-01**: Operator can configure an external Ethereum Mainnet HTTP RPC endpoint and the USDT/USDC contract addresses, decimals, and confirmation policy without changing business logic.
 - [ ] **CHAIN-02**: Indexer verifies chain ID 1 and confirms the configured RPC supports the selected historical block range and block-specific contract calls before reporting supply as available.
 
 ### Supply Events
@@ -68,7 +68,7 @@ The user-provided [source specification](../requirements.md) defines the intende
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| CHAIN-01 | Phase 1 | Pending |
+| CHAIN-01 | Phase 1 | Complete |
 | CHAIN-02 | Phase 3 | Pending |
 | EVENT-01 | Phase 1 | Pending |
 | EVENT-02 | Phase 1 | Pending |
