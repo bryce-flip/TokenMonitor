@@ -6,7 +6,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"TOkenMonitor/internal/config"
 )
@@ -24,15 +26,18 @@ func testConfig() *config.Config {
 }
 
 // cannedRPC answers every JSON-RPC POST with fixed eth_chainId /
-// eth_blockNumber results, an empty eth_getLogs result, and an optional
-// injected eth_getLogs failure.
+// eth_blockNumber results, an empty eth_getLogs result, and optional
+// injected eth_getLogs failures: a permanent one (getLogsFailed) or an
+// initial run of throttled responses (getLogs429s) after which it succeeds.
 type cannedRPC struct {
 	chainID       string
 	head          string
 	getLogsFailed bool
+	getLogs429s   int32        // throttle the first N eth_getLogs with -32005
+	getLogsCalls  atomic.Int32 // total eth_getLogs attempts served
 }
 
-func (c cannedRPC) start(t *testing.T) *httptest.Server {
+func (c *cannedRPC) start(t *testing.T) *httptest.Server {
 	t.Helper()
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
@@ -51,8 +56,13 @@ func (c cannedRPC) start(t *testing.T) *httptest.Server {
 		case "eth_blockNumber":
 			resp["result"] = c.head
 		case "eth_getLogs":
+			n := c.getLogsCalls.Add(1)
 			if c.getLogsFailed {
 				resp["error"] = map[string]any{"code": -32602, "message": "Archive requests require a personal token"}
+				break
+			}
+			if n <= c.getLogs429s {
+				resp["error"] = map[string]any{"code": -32005, "message": "Too Many Requests"}
 				break
 			}
 			resp["result"] = []any{}
@@ -70,7 +80,8 @@ func (c cannedRPC) start(t *testing.T) *httptest.Server {
 // TestProbeRejectsWrongChain proves D-02's network guard: a provider on chain
 // id 2 aborts before any ingest.
 func TestProbeRejectsWrongChain(t *testing.T) {
-	srv := cannedRPC{chainID: "0x2", head: "0x3e8"}.start(t)
+	canned := cannedRPC{chainID: "0x2", head: "0x3e8"}
+	srv := canned.start(t)
 	c, err := New(context.Background(), srv.URL)
 	if err != nil {
 		t.Fatalf("dial: %v", err)
@@ -89,7 +100,8 @@ func TestProbeRejectsWrongChain(t *testing.T) {
 // sample eth_getLogs pass the probe; the fetch path then returns zero rows
 // without error.
 func TestProbeAcceptsConfirmedRangeAndFetchReturnsZeroRows(t *testing.T) {
-	srv := cannedRPC{chainID: "0x1", head: "0x3e8"}.start(t) // head 1000, conf 20
+	canned := cannedRPC{chainID: "0x1", head: "0x3e8"} // head 1000, conf 20
+	srv := canned.start(t)
 	c, err := New(context.Background(), srv.URL)
 	if err != nil {
 		t.Fatalf("dial: %v", err)
@@ -111,7 +123,8 @@ func TestProbeAcceptsConfirmedRangeAndFetchReturnsZeroRows(t *testing.T) {
 // to == head-confirmation_blocks is accepted; to one block past it is
 // rejected with an error naming the policy.
 func TestProbeConfirmationBoundaryExactness(t *testing.T) {
-	srv := cannedRPC{chainID: "0x1", head: "0x3e8"}.start(t) // head 1000
+	canned := cannedRPC{chainID: "0x1", head: "0x3e8"} // head 1000
+	srv := canned.start(t)
 	c, err := New(context.Background(), srv.URL)
 	if err != nil {
 		t.Fatalf("dial: %v", err)
@@ -133,7 +146,8 @@ func TestProbeConfirmationBoundaryExactness(t *testing.T) {
 // TestProbeRejectsProviderWithoutHistoricalLogs aborts when the sample
 // eth_getLogs at the from-block fails (D-02: history-limited providers).
 func TestProbeRejectsProviderWithoutHistoricalLogs(t *testing.T) {
-	srv := cannedRPC{chainID: "0x1", head: "0x3e8", getLogsFailed: true}.start(t)
+	canned := cannedRPC{chainID: "0x1", head: "0x3e8", getLogsFailed: true}
+	srv := canned.start(t)
 	c, err := New(context.Background(), srv.URL)
 	if err != nil {
 		t.Fatalf("dial: %v", err)
@@ -144,5 +158,32 @@ func TestProbeRejectsProviderWithoutHistoricalLogs(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "sample eth_getLogs") {
 		t.Errorf("error %q does not name the sample eth_getLogs probe", err.Error())
+	}
+}
+
+// TestFetchLogsRetriesRateLimits proves requirements.md §24 behavior
+// (free-tier providers throttle bursty requests; observed live against the
+// operator provider as HTTP 429 / JSON-RPC -32005): a throttled eth_getLogs
+// is retried with bounded backoff instead of failing the bounded run.
+func TestFetchLogsRetriesRateLimits(t *testing.T) {
+	orig := rateLimitBackoffs
+	rateLimitBackoffs = []time.Duration{time.Millisecond, time.Millisecond, time.Millisecond}
+	t.Cleanup(func() { rateLimitBackoffs = orig })
+
+	canned := cannedRPC{chainID: "0x1", head: "0x3e8", getLogs429s: 2}
+	srv := canned.start(t)
+	c, err := New(context.Background(), srv.URL)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	logs, err := c.FetchLogs(context.Background(), testConfig().Tokens[0], nil, 100, 980)
+	if err != nil {
+		t.Fatalf("fetch must survive two throttled responses via retry: %v", err)
+	}
+	if len(logs) != 0 {
+		t.Fatalf("expected zero logs from the recovered canned response, got %d", len(logs))
+	}
+	if got := canned.getLogsCalls.Load(); got != 3 {
+		t.Fatalf("eth_getLogs attempts = %d, want 3 (two throttled, one recovered)", got)
 	}
 }

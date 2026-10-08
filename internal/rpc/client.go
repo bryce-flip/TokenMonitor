@@ -8,6 +8,7 @@ import (
 	"context"
 	"fmt"
 	"math/big"
+	"time"
 
 	"github.com/ethereum/go-ethereum"
 	"github.com/ethereum/go-ethereum/common"
@@ -17,6 +18,11 @@ import (
 	"TOkenMonitor/internal/config"
 	"TOkenMonitor/internal/indexer"
 )
+
+// rateLimitBackoffs paces retries of throttled RPC reads. Free-tier
+// providers reject bursty requests (observed live: HTTP 429 / JSON-RPC
+// -32005); requirements.md §24 requires the indexer to tolerate them.
+var rateLimitBackoffs = []time.Duration{2 * time.Second, 4 * time.Second, 8 * time.Second, 16 * time.Second}
 
 // Client wraps ethclient for the bounded reads the indexer needs.
 type Client struct {
