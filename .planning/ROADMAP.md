@@ -86,3 +86,21 @@ Plans:
 | 2. Reliable Canonical Indexing | 0/TBD | Not started | - |
 | 3. Anchored Supply Reconciliation | 0/TBD | Not started | - |
 | 4. Issuance and Operator Views | 0/TBD | Not started | - |
+
+## Backlog
+
+### Phase 999.1: Follow-up — Phase 01 deferred UAT follow-up: Test 8 (BACKLOG)
+
+**Goal:** Resolve the UAT checkpoint deferred during Phase 01 verification
+**Source phase:** 01
+**Deferred at:** 2026-10-08 during /gsd-verify-work 1 session completion
+**Follow-ups:**
+- [ ] Test 8: Pin a deployed historical zero-address USDT Transfer transaction as a chain-verified negative fixture (research A4) (deferred 2026-10-08)
+
+### Phase 999.2: Follow-up — Phase 01 deferred UAT follow-up: Test 10 (BACKLOG)
+
+**Goal:** Resolve the UAT checkpoint deferred during Phase 01 verification
+**Source phase:** 01
+**Deferred at:** 2026-10-08 during /gsd-verify-work 1 session completion
+**Follow-ups:**
+- [ ] Test 10: Kurtosis local Ethereum testnet as Phase 2 reorg/behavior test environment (user-proposed): deploy real TetherToken source for identical event semantics, force competitive-fork reorgs to exercise WR-01 guard and SYNC-05 end-to-end, rate-limit-free RPC for restart/replay tests. Localnet is for behavior tests, never a substitute for Mainnet classification fixtures. (deferred 2026-10-08)
