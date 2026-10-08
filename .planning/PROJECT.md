@@ -2,7 +2,7 @@
 
 ## What This Is
 
-A monitor for USDT and USDC issuance on Ethereum Mainnet. A Go indexer reads contract Transfer logs, records mint and burn events in ClickHouse, derives supply and issuance metrics, compares supply with each contract's `totalSupply()`, and presents the results in Grafana. The initial user is an operator or analyst who needs to inspect current supply, recent issuance, large events, and data health.
+A monitor for USDT and USDC issuance on Ethereum Mainnet. A Go indexer reads each contract's supply-changing events, records mint and burn activity in ClickHouse, derives supply and issuance metrics, compares supply with each contract's `totalSupply()`, and presents the results in Grafana. The initial user is an operator or analyst who needs to inspect current supply, recent issuance, large events, and data health.
 
 ## Core Value
 
@@ -16,7 +16,7 @@ Give a trustworthy, reproducible view of USDT and USDC supply and mint/burn acti
 
 ### Active
 
-- [ ] Index USDT and USDC mint/burn events from Ethereum Mainnet Transfer logs with restart recovery, duplicate protection, and reorg-safe block selection.
+- [ ] Index USDT and USDC supply-changing events with token-specific decoding, restart recovery, duplicate protection, and reorg-safe block selection.
 - [ ] Store raw events and derive current supply, daily mint/burn/net issuance, and 24-hour, 7-day, and 30-day net issuance.
 - [ ] Sample contract `totalSupply()` and report differences from calculated supply.
 - [ ] Show supply, trends, issuance, and large events in Grafana.
@@ -35,6 +35,7 @@ Give a trustworthy, reproducible view of USDT and USDC supply and mint/burn acti
 - The codebase currently has `go.mod` and no Go source, migrations, deployment files, or dashboard. `.planning/codebase/` documents that initial state; the package layout in `requirements.md` is proposed, not established code.
 - The first technical proof is Ethereum RPC to USDT/USDC Transfer logs to correct mint/burn classification to ClickHouse. Later capabilities build on stored raw events.
 - Derived metrics should be rebuildable from stored events without rescanning Ethereum. Planning must resolve the historical starting point or supply anchor needed for an absolute calculated supply before claiming reconciliation with `totalSupply()`.
+- Research found a correction to the source specification: USDT `Issue`, `Redeem`, and `DestroyedBlackFunds` change supply without zero-address `Transfer`; USDC mint/burn can use zero-address `Transfer` without also counting paired events. Phase 1 must verify these rules against deployed contracts.
 
 ## Constraints
 
@@ -52,6 +53,7 @@ Give a trustworthy, reproducible view of USDT and USDC supply and mint/burn acti
 | Start with Ethereum Mainnet USDT and USDC | Prove the complete issuance data path before expansion | Pending |
 | Use raw on-chain events as the source for derived metrics | Supports recalculation after logic changes without another chain scan | Pending |
 | Use Grafana directly over ClickHouse for the MVP | The specification does not require a custom API or frontend | Pending |
+| Decode supply events per token | USDT and USDC contract event semantics differ; a Transfer-only indexer would miss USDT issuance | Pending |
 
 ## Evolution
 
