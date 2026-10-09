@@ -26,7 +26,28 @@ import (
 // -32005); requirements.md §24 requires the indexer to tolerate them.
 var rateLimitBackoffs = []time.Duration{2 * time.Second, 4 * time.Second, 8 * time.Second, 16 * time.Second}
 
-// isRateLimitErr reports a provider throttle response.
+// isResultCapErr reports a provider result-cap / query-duration rejection:
+// Infura documents BOTH shapes under code -32005 (docs.infura.io, retrieved
+// 2026-10-09), so only the message text discriminates them from throttles
+// (D-05, 02-RESEARCH Pitfall 1):
+//
+//	{"code":-32005,"message":"query returned more than 10000 results"}
+//	{"code":-32005,"message":"query timeout exceeded"}
+func isResultCapErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	s := err.Error()
+	return strings.Contains(s, "more than 10000 results") ||
+		strings.Contains(s, "query timeout exceeded")
+}
+
+// isRateLimitErr reports a provider throttle response. The bare -32005
+// disjunct is gone (02-02): that code is shared with the result cap above,
+// and a cap misrouted here would burn the bounded backoff on a query that
+// can only be fixed by shrinking the range. Live-observed throttle shapes:
+// 429 / -32005 "Too Many Requests" (Phase 1), -32005 "Rate limit exceeded"
+// (eth.merkle.io, 02-RESEARCH).
 func isRateLimitErr(err error) bool {
 	if err == nil {
 		return false
@@ -34,7 +55,7 @@ func isRateLimitErr(err error) bool {
 	s := err.Error()
 	return strings.Contains(s, "429") ||
 		strings.Contains(s, "Too Many Requests") ||
-		strings.Contains(s, "-32005") ||
+		strings.Contains(s, "Rate limit exceeded") ||
 		strings.Contains(s, "temporarily unavailable")
 }
 
@@ -134,6 +155,58 @@ func (c *Client) FetchLogs(ctx context.Context, token config.Token, topics []com
 		return nil, fmt.Errorf("eth_getLogs %s %s blocks %d-%d: %w", token.Symbol, config.HostOnly(c.rawURL), from, to, err)
 	}
 	return logs, nil
+}
+
+// FetchLogsResilient fetches token's supply-topic logs over [from, to] under
+// the D-05 window policy: walk the range in sub-ranges starting at
+// min(window, remaining); a result-cap rejection (isResultCapErr — checked
+// BEFORE any throttle classification, T-02-07) halves the sub-range and
+// retries the SAME starting block immediately (the query was rejected, not
+// throttled — no backoff); a throttle is retried on the same sub-range by
+// the existing bounded backoff inside FetchLogs. A cap that persists down to
+// the floor fails closed with a named error — a range that cannot be fetched
+// is never silently skipped (SYNC-02). The sub-range size resets to the
+// passed window on every call: halving state never leaks across outer
+// windows (D-05 stateless policy).
+func (c *Client) FetchLogsResilient(ctx context.Context, token config.Token, topics []common.Hash, from, to, window, floor uint64) ([]types.Log, error) {
+	if floor < 1 {
+		floor = 1 // a sub-range is never smaller than one block
+	}
+	var out []types.Log
+	size := window
+	start := from
+	for start <= to {
+		if err := ctx.Err(); err != nil {
+			return nil, fmt.Errorf("eth_getLogs %s %s blocks %d-%d: %w", token.Symbol, config.HostOnly(c.rawURL), from, to, err)
+		}
+		if remaining := to - start + 1; size > remaining {
+			size = remaining
+		}
+		end := start + size - 1
+		logs, err := c.FetchLogs(ctx, token, topics, start, end)
+		if err != nil {
+			// Classify cap before throttle: a misroute either dead-ends dense
+			// catch-up (cap into backoff exhaustion) or amplifies throttling
+			// (throttle into immediate retries) — Pitfall 1.
+			if isResultCapErr(err) {
+				if size <= floor {
+					return nil, fmt.Errorf("eth_getLogs %s %s blocks %d-%d: result cap persists at window_floor %d — halving cannot shrink the sub-range further; failing closed, the range is never skipped (SYNC-02)",
+						token.Symbol, config.HostOnly(c.rawURL), start, end, floor)
+				}
+				size /= 2
+				if size < 1 {
+					size = 1
+				}
+				continue // same starting block, no backoff
+			}
+			// Throttle: withRateLimitRetry already applied bounded backoff on
+			// this exact sub-range; exhaustion (or a permanent error) fails.
+			return nil, err
+		}
+		out = append(out, logs...)
+		start = end + 1
+	}
+	return out, nil
 }
 
 // Header returns the canonical block header (hash + timestamp) at number.
