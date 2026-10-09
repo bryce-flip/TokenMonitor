@@ -317,3 +317,169 @@ func TestReplayTotalsStableBeforeAndAfterOptimize(t *testing.T) {
 	assertTotals(t, ctx, store, subFrom, subTo, wantN, wantSum, "after wider replay, sub-range")
 	assertTotals(t, ctx, store, subFrom, wideTo, 4, big.NewInt(10_000_000_000_000), "after wider replay, wider range")
 }
+
+// rewindTotals reads the FINAL (count, sum) for chain over [from, to] via the
+// production method — the rewind report's own measurement.
+func rewindTotals(t *testing.T, ctx context.Context, store *Store, chain string, from, to uint64) (uint64, *big.Int) {
+	t.Helper()
+	n, sum, err := store.RangeTotals(ctx, chain, from, to)
+	if err != nil {
+		t.Fatalf("RangeTotals %d-%d: %v", from, to, err)
+	}
+	return n, sum
+}
+
+// TestRewindDeleteExcludesOrphansImmediately proves the rewind recipe's first
+// half on the pinned server (02-RESEARCH Pattern 4): a lightweight DELETE
+// above the rewind point is visible to FINAL reads IMMEDIATELY (pre-merge) —
+// only rows at or below the point survive — and StoredBlockHashes reports
+// nothing above the point (SYNC-05).
+func TestRewindDeleteExcludesOrphansImmediately(t *testing.T) {
+	store := openStore(t)
+	ctx := context.Background()
+	const base = uint64(0x6000000) // fresh band for this suite
+
+	var rows []EventRow
+	var fullSum big.Int
+	for h := uint64(100); h <= 120; h++ {
+		amt := big.NewInt(int64(1000 + h))
+		rows = append(rows, testRow(base+h, 0, fmt.Sprintf("e%02d", h), amt))
+		fullSum.Add(&fullSum, amt)
+	}
+	if err := store.InsertEvents(ctx, rows); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+	n, sum := rewindTotals(t, ctx, store, "ethereum", base+100, base+120)
+	if n != 21 || sum.Cmp(&fullSum) != 0 {
+		t.Fatalf("pre-delete band totals = (%d, %s), want (21, %s)", n, sum.String(), fullSum.String())
+	}
+
+	// Rewind point at band-relative 105: everything above is orphaned.
+	if err := store.DeleteEventsFrom(ctx, "ethereum", base+105); err != nil {
+		t.Fatalf("DeleteEventsFrom above %d: %v", base+105, err)
+	}
+
+	// Immediately — no OPTIMIZE, background merges not involved — the FINAL
+	// totals over the band reflect ONLY rows at or below 105.
+	wantSum := big.NewInt(1100 + 1101 + 1102 + 1103 + 1104 + 1105)
+	n, sum = rewindTotals(t, ctx, store, "ethereum", base+100, base+120)
+	if n != 6 || sum.Cmp(wantSum) != 0 {
+		t.Fatalf("post-delete FINAL band totals = (%d, %s), want (6, %s) — orphans must be excluded immediately", n, sum.String(), wantSum.String())
+	}
+	hashes, err := store.StoredBlockHashes(ctx, "ethereum", base+100, base+120)
+	if err != nil {
+		t.Fatalf("StoredBlockHashes: %v", err)
+	}
+	if len(hashes) != 6 {
+		t.Fatalf("StoredBlockHashes returned %d heights, want 6", len(hashes))
+	}
+	for h := range hashes {
+		if h > base+105 {
+			t.Fatalf("StoredBlockHashes reports height %d above the rewind point %d", h, base+105)
+		}
+	}
+}
+
+// TestRewindSameIdentityReinsertNotSwallowed proves the recipe's subtle edge
+// (02-RESEARCH Pattern 4, Pitfall 4): after the rewind delete, a re-included
+// transaction's event carrying the SAME identity (chain, token,
+// block_number, tx_hash, log_index) but a NEW block_hash and amount reads
+// back with exactly the new values — exactly one logical row, before AND
+// after a forced merge: no resurrection of the deleted row, no swallow of
+// the re-insert.
+func TestRewindSameIdentityReinsertNotSwallowed(t *testing.T) {
+	store := openStore(t)
+	ctx := context.Background()
+	const base = uint64(0x6000100)
+
+	orig := testRow(base+110, 5, "f1", big.NewInt(111))
+	if err := store.InsertEvents(ctx, []EventRow{orig}); err != nil {
+		t.Fatalf("insert displaced row: %v", err)
+	}
+	if err := store.DeleteEventsFrom(ctx, "ethereum", base+105); err != nil {
+		t.Fatalf("delete above %d: %v", base+105, err)
+	}
+
+	// The version column is created_at (DateTime, second precision): the
+	// re-insert must carry a strictly greater version to deterministically
+	// supersede the deleted row under FINAL, so cross a second boundary.
+	time.Sleep(1200 * time.Millisecond)
+
+	re := orig
+	re.BlockHash = "0x" + strings.Repeat("0", 63) + "1" // the re-included block's new hash
+	re.RawAmount = big.NewInt(222)
+	if err := store.InsertEvents(ctx, []EventRow{re}); err != nil {
+		t.Fatalf("insert re-included row: %v", err)
+	}
+
+	readIdentity := func(stage string) {
+		t.Helper()
+		var n uint64
+		var sum big.Int
+		var hash string
+		if err := store.conn.QueryRow(ctx,
+			`SELECT count(), sum(raw_amount), any(block_hash) FROM stablecoin_events FINAL
+			 WHERE chain = ? AND block_number = ? AND tx_hash = ? AND log_index = ?`,
+			orig.Chain, orig.BlockNumber, orig.TxHash, orig.LogIndex,
+		).Scan(&n, &sum, &hash); err != nil {
+			t.Fatalf("%s: identity read: %v", stage, err)
+		}
+		if n != 1 || sum.Int64() != 222 || hash != re.BlockHash {
+			t.Fatalf("%s: identity read = (%d, %s, %s), want exactly the NEW values (1, 222, %s)",
+				stage, n, sum.String(), hash, re.BlockHash)
+		}
+	}
+	readIdentity("pre-merge")
+
+	if err := store.conn.Exec(ctx, "OPTIMIZE TABLE stablecoin_events FINAL"); err != nil {
+		t.Fatalf("optimize stablecoin_events: %v", err)
+	}
+	readIdentity("post-OPTIMIZE")
+}
+
+// TestRangeTotalsMatchesOracleQuery proves the rewind report's measurement
+// equals the raw oracle query shape (02-RESEARCH Pattern 3) executed directly
+// — bound parameters in the same positions, exact-integer sum — and that an
+// empty range is (0, 0), never an error or a nil sum.
+func TestRangeTotalsMatchesOracleQuery(t *testing.T) {
+	store := openStore(t)
+	ctx := context.Background()
+	const from, to = uint64(0x6000200), uint64(0x6000210)
+
+	rows := []EventRow{
+		testRow(0x6000200, 0, "g1", big.NewInt(1_000_000_000)),
+		testRow(0x6000203, 1, "g2", big.NewInt(2_000_000_000)),
+		testRow(0x6000207, 2, "g3", big.NewInt(3_000_000_000)),
+	}
+	if err := store.InsertEvents(ctx, rows); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+
+	n, sum, err := store.RangeTotals(ctx, "ethereum", from, to)
+	if err != nil {
+		t.Fatalf("RangeTotals: %v", err)
+	}
+	var on uint64
+	var osum big.Int
+	if err := store.conn.QueryRow(ctx,
+		"SELECT count(), sum(raw_amount) FROM stablecoin_events FINAL WHERE chain = ? AND block_number BETWEEN ? AND ?",
+		"ethereum", from, to,
+	).Scan(&on, &osum); err != nil {
+		t.Fatalf("oracle query: %v", err)
+	}
+	if n != on || sum.Cmp(&osum) != 0 {
+		t.Fatalf("RangeTotals (%d, %s) != oracle (%d, %s)", n, sum.String(), on, osum.String())
+	}
+	if n != 3 || sum.Cmp(big.NewInt(6_000_000_000)) != 0 {
+		t.Fatalf("RangeTotals = (%d, %s), want (3, 6000000000)", n, sum.String())
+	}
+
+	// A range with no rows: (0, 0), never an error.
+	en, esum, err := store.RangeTotals(ctx, "ethereum", 0x6000300, 0x6000310)
+	if err != nil {
+		t.Fatalf("RangeTotals over empty range: %v", err)
+	}
+	if en != 0 || esum == nil || esum.Sign() != 0 {
+		t.Fatalf("RangeTotals over empty range = (%d, %v), want (0, 0)", en, esum)
+	}
+}
