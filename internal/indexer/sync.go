@@ -25,7 +25,10 @@ import (
 type ChainReader interface {
 	EligibleHead(ctx context.Context, cfg *config.Config) (uint64, common.Hash, error)
 	Header(ctx context.Context, number uint64) (*types.Header, error)
-	FetchLogs(ctx context.Context, token config.Token, topics []common.Hash, from, to uint64) ([]types.Log, error)
+	// FetchLogsResilient carries the D-05 window policy (sub-range halving
+	// under result caps, fail-closed floor, bounded throttle backoff); the
+	// loop never advances the checkpoint on its failure (SYNC-02).
+	FetchLogsResilient(ctx context.Context, token config.Token, topics []common.Hash, from, to, window, floor uint64) ([]types.Log, error)
 }
 
 // EventStore is the storage surface RunSync needs. *storage.Store satisfies
@@ -136,7 +139,7 @@ func ingestWindow(ctx context.Context, cr ChainReader, es EventStore, cfg *confi
 			slog.Warn("no supply topics for token; skipping", "token", token.Symbol)
 			continue
 		}
-		logs, err := cr.FetchLogs(ctx, token, topics, start, end)
+		logs, err := cr.FetchLogsResilient(ctx, token, topics, start, end, cfg.WindowBlocks, cfg.WindowFloor)
 		if err != nil {
 			return fmt.Errorf("fetch %s blocks %d-%d: %w", token.Symbol, start, end, err)
 		}

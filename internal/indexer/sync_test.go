@@ -15,6 +15,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -91,14 +92,22 @@ func cannonHash(n uint64, timeOverride map[uint64]uint64) string {
 
 // cannonRPC answers the three methods indexer.RunSync needs: a finalized head
 // (eth_getBlockByNumber "finalized"), per-height headers, and a fixed log
-// set filtered to the requested eth_getLogs range.
+// set filtered to the requested eth_getLogs range. Failure injection (D-05
+// proofs): throttleN throttles the first N eth_getLogs with -32005 "Too Many
+// Requests" (routed to bounded backoff); capSpan caps any eth_getLogs span
+// above it with -32005 capMsg (routed to sub-range halving).
 type cannonRPC struct {
 	head         uint64
 	logs         []types.Log
 	timeOverride map[uint64]uint64
+	throttleN    int32  // throttle the first N eth_getLogs with -32005 "Too Many Requests"
+	capSpan      uint64 // 0 = off; otherwise cap any eth_getLogs span > capSpan
+	capMsg       string // cap error message; empty = "query returned more than 10000 results"
 
-	mu          sync.Mutex
-	getLogsFrom []uint64 // FromBlock of every eth_getLogs served
+	getLogsCalls atomic.Int32
+
+	mu       sync.Mutex
+	logRange [][2]uint64 // (fromBlock, toBlock) of every eth_getLogs served
 }
 
 func hexNum(s string) uint64 {
@@ -153,8 +162,21 @@ func (c *cannonRPC) start(t *testing.T) *httptest.Server {
 			}
 			from, to := hexNum(q.FromBlock), hexNum(q.ToBlock)
 			c.mu.Lock()
-			c.getLogsFrom = append(c.getLogsFrom, from)
+			c.logRange = append(c.logRange, [2]uint64{from, to})
 			c.mu.Unlock()
+			n := c.getLogsCalls.Add(1)
+			if n <= c.throttleN {
+				resp["error"] = map[string]any{"code": -32005, "message": "Too Many Requests"}
+				break
+			}
+			if c.capSpan != 0 && to-from+1 > c.capSpan {
+				msg := c.capMsg
+				if msg == "" {
+					msg = "query returned more than 10000 results"
+				}
+				resp["error"] = map[string]any{"code": -32005, "message": msg}
+				break
+			}
 			out := []types.Log{}
 			for _, lg := range c.logs {
 				if lg.BlockNumber >= from && lg.BlockNumber <= to {
@@ -176,7 +198,25 @@ func (c *cannonRPC) start(t *testing.T) *httptest.Server {
 func (c *cannonRPC) fromBlocks() []uint64 {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return append([]uint64(nil), c.getLogsFrom...)
+	out := make([]uint64, len(c.logRange))
+	for i, r := range c.logRange {
+		out[i] = r[0]
+	}
+	return out
+}
+
+// fetchedRanges returns every (fromBlock, toBlock) eth_getLogs pair served.
+func (c *cannonRPC) fetchedRanges() [][2]uint64 {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return append([][2]uint64(nil), c.logRange...)
+}
+
+// cpWrites returns the heights of successful WriteCheckpoint calls.
+func (f *fakeEventStore) checkpointWrites() []uint64 {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]uint64(nil), f.cpWrites...)
 }
 
 // usdtIssueLog builds a decodable USDT Issue log whose block hash matches the
@@ -540,5 +580,144 @@ func TestRunSyncCrashBetweenInsertAndCheckpoint(t *testing.T) {
 	}
 	if h, hash, _ := fake.state(); h != 150 || hash != cannonHash(150, nil) {
 		t.Fatalf("checkpoint after recovery = (%d, %s), want (150, %s)", h, hash, cannonHash(150, nil))
+	}
+}
+
+// TestRunSyncThrottleRetriesSameWindowWithoutAdvancing proves SYNC-02 through
+// the real resilient fetch path: the first two eth_getLogs attempts of the
+// window are throttled (-32005 "Too Many Requests"), bounded backoff retries
+// the IDENTICAL window bounds, the window then completes, and the checkpoint
+// advances exactly once to the window end. The unshortened production
+// backoffs (2s + 4s) run for real — the waitFor budget absorbs them.
+func TestRunSyncThrottleRetriesSameWindowWithoutAdvancing(t *testing.T) {
+	cannon := &cannonRPC{head: 150, throttleN: 2}
+	srv := cannon.start(t)
+	client, err := rpc.New(context.Background(), srv.URL)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	fake := &fakeEventStore{cpFound: true, cpHeight: 100, cpHash: cannonHash(100, nil)}
+
+	errCh, cancel := runSyncAsync(t, client, fake, syncConfig())
+	waitFor(t, 20*time.Second, "checkpoint at window end 150", func() bool {
+		h, _, _ := fake.state()
+		return h == 150
+	})
+	cancel()
+	awaitCanceled(t, errCh)
+
+	ranges := cannon.fetchedRanges()
+	if len(ranges) != 3 {
+		t.Fatalf("eth_getLogs requests = %+v, want 3 (two throttled, one recovered)", ranges)
+	}
+	for _, r := range ranges {
+		if r[0] != 101 || r[1] != 150 {
+			t.Fatalf("throttled window retried different bounds: %+v, want [101 150] on every attempt", r)
+		}
+	}
+	if writes := fake.checkpointWrites(); len(writes) != 1 || writes[0] != 150 {
+		t.Fatalf("checkpoint writes = %v, want exactly one advance to 150", writes)
+	}
+	if inserts := fake.insertCalls(); len(inserts) != 1 {
+		t.Fatalf("insert calls = %d, want 1 (the window stores once after recovery)", len(inserts))
+	}
+}
+
+// TestRunSyncCapHalvesWithinWindowAndAdvances proves the D-05 loop behavior:
+// a result cap inside a window forces halved sub-ranges (same starting
+// block, no backoff), the window still completes, the checkpoint advances to
+// the same window end, and per-event provenance is unaffected.
+func TestRunSyncCapHalvesWithinWindowAndAdvances(t *testing.T) {
+	cannon := &cannonRPC{
+		head:    350,
+		capSpan: 100,
+		logs: []types.Log{
+			usdtIssueLog(150, 1, 1_000_000),
+			usdtIssueLog(250, 2, 2_000_000),
+			usdtIssueLog(320, 3, 3_000_000),
+		},
+	}
+	srv := cannon.start(t)
+	client, err := rpc.New(context.Background(), srv.URL)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	fake := &fakeEventStore{cpFound: true, cpHeight: 100, cpHash: cannonHash(100, nil)}
+	cfg := syncConfig()
+	cfg.WindowBlocks = 200 // windows [101,300] then [301,350]
+	cfg.WindowFloor = 100
+
+	errCh, cancel := runSyncAsync(t, client, fake, cfg)
+	waitFor(t, 10*time.Second, "checkpoint at head 350", func() bool {
+		h, _, _ := fake.state()
+		return h == 350
+	})
+	cancel()
+	awaitCanceled(t, errCh)
+
+	ranges := cannon.fetchedRanges()
+	if len(ranges) < 3 || ranges[0] != [2]uint64{101, 300} || ranges[1] != [2]uint64{101, 200} || ranges[2] != [2]uint64{201, 300} {
+		t.Fatalf("fetch ranges = %+v, want [101 300] capped, then halves [101 200] and [201 300] with the same starting block", ranges)
+	}
+	if h, hash, _ := fake.state(); h != 350 || hash != cannonHash(350, nil) {
+		t.Fatalf("checkpoint = (%d, %s), want (350, %s)", h, hash, cannonHash(350, nil))
+	}
+	var rows []storage.EventRow
+	for _, call := range fake.insertCalls() {
+		rows = append(rows, call...)
+	}
+	if len(rows) != 3 {
+		t.Fatalf("stored rows = %d, want 3 (one per event, halving must not drop any)", len(rows))
+	}
+	for i, bn := range []uint64{150, 250, 320} {
+		if rows[i].BlockNumber != bn {
+			t.Errorf("row %d block = %d, want %d (provenance unaffected by halving)", i, rows[i].BlockNumber, bn)
+		}
+		if rows[i].TxHash != common.HexToHash(fmt.Sprintf("0x%064x", 0x900000+bn*16+uint64(i+1))).Hex() {
+			t.Errorf("row %d tx hash = %s, want the fixture-derived hash", i, rows[i].TxHash)
+		}
+		if rows[i].BlockHash != cannonHash(bn, nil) {
+			t.Errorf("row %d block hash = %s, want %s", i, rows[i].BlockHash, cannonHash(bn, nil))
+		}
+	}
+}
+
+// TestRunSyncFloorTripStopsRunCheckpointUnmoved proves the SYNC-02 boundary
+// through the loop: a result cap that persists down to window_floor fails
+// the run with the named floor error, the fake store shows ZERO checkpoint
+// writes for the blocked window, and no later window is ever fetched — the
+// run stops instead of skipping.
+func TestRunSyncFloorTripStopsRunCheckpointUnmoved(t *testing.T) {
+	cannon := &cannonRPC{head: 350, capSpan: 1} // every span caps
+	srv := cannon.start(t)
+	client, err := rpc.New(context.Background(), srv.URL)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	fake := &fakeEventStore{cpFound: true, cpHeight: 100, cpHash: cannonHash(100, nil)}
+	cfg := syncConfig()
+	cfg.WindowBlocks = 200 // first window [101,300], floor 100 trips at span 100
+	cfg.WindowFloor = 100
+
+	err = indexer.RunSync(context.Background(), client, fake, cfg)
+	if err == nil {
+		t.Fatal("persistent cap at the floor must stop the run")
+	}
+	if msg := err.Error(); !strings.Contains(msg, "window_floor 100") || !strings.Contains(msg, "blocks 101-200") {
+		t.Fatalf("error %q does not name window_floor 100 and the blocked sub-range 101-200", msg)
+	}
+	if writes := fake.checkpointWrites(); len(writes) != 0 {
+		t.Fatalf("checkpoint writes on floor trip = %v, want none (checkpoint unmoved)", writes)
+	}
+	if inserts := fake.insertCalls(); len(inserts) != 0 {
+		t.Fatalf("insert calls on floor trip = %d, want 0 (nothing stored from the blocked window)", len(inserts))
+	}
+	for _, r := range cannon.fetchedRanges() {
+		if r[0] != 101 {
+			t.Fatalf("a later window was fetched after the floor trip: %+v — the run must stop, not skip", r)
+		}
+	}
+	if h, _, _ := fake.state(); h != 100 {
+		t.Fatalf("checkpoint moved to %d despite floor trip, want 100", h)
 	}
 }
