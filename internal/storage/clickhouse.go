@@ -179,6 +179,65 @@ func (s *Store) WriteCheckpoint(ctx context.Context, chain string, height uint64
 	return nil
 }
 
+// DeleteEventsFrom excludes all of chain's events strictly above after via a
+// lightweight DELETE — never ALTER TABLE ... DELETE (mutations are async and
+// read-invisible until finished). Lightweight deletes are immediately visible
+// to FINAL reads, survive background merges, and do not swallow a later
+// re-insert carrying the same event identity: the probe-verified rewind recipe
+// (02-RESEARCH Pattern 4, SYNC-05). Rows at or below after are never touched;
+// the rewind subcommand is the only caller.
+func (s *Store) DeleteEventsFrom(ctx context.Context, chain string, after uint64) error {
+	if err := s.conn.Exec(ctx,
+		`DELETE FROM stablecoin_events WHERE chain = ? AND block_number > ?`,
+		chain, after,
+	); err != nil {
+		return fmt.Errorf("clickhouse delete events above %d: %w", after, err)
+	}
+	return nil
+}
+
+// StoredBlockHashes returns one block_hash per event-bearing height of chain
+// in [from, to] — the stored side of the rewind ancestor walk. FINAL is
+// mandatory (correctness read); any() suffices per height because every log
+// a provider attests for one block carries that block's hash (WR-01).
+func (s *Store) StoredBlockHashes(ctx context.Context, chain string, from, to uint64) (map[uint64]string, error) {
+	rows, err := s.conn.Query(ctx, `
+		SELECT block_number, any(block_hash) FROM stablecoin_events FINAL
+		WHERE chain = ? AND block_number >= ? AND block_number <= ?
+		GROUP BY block_number`, chain, from, to)
+	if err != nil {
+		return nil, fmt.Errorf("clickhouse stored block hashes: %w", err)
+	}
+	defer rows.Close()
+	out := map[uint64]string{}
+	for rows.Next() {
+		var n uint64
+		var h string
+		if err := rows.Scan(&n, &h); err != nil {
+			return nil, fmt.Errorf("clickhouse stored block hashes scan: %w", err)
+		}
+		out[n] = h
+	}
+	return out, rows.Err()
+}
+
+// RangeTotals returns the FINAL (count, sum(raw_amount)) over chain's events
+// in the inclusive block range [from, to] — the 02-RESEARCH Pattern 3 oracle
+// shape the rewind reports before and after the delete. The sum stays an
+// exact integer (*big.Int, never float); an empty range is (0, 0).
+func (s *Store) RangeTotals(ctx context.Context, chain string, from, to uint64) (count uint64, sum *big.Int, err error) {
+	var n uint64
+	var total big.Int
+	if err := s.conn.QueryRow(ctx, `
+		SELECT count(), sum(raw_amount) FROM stablecoin_events FINAL
+		WHERE chain = ? AND block_number BETWEEN ? AND ?`,
+		chain, from, to,
+	).Scan(&n, &total); err != nil {
+		return 0, nil, fmt.Errorf("clickhouse range totals %d-%d: %w", from, to, err)
+	}
+	return n, &total, nil
+}
+
 // ReadCheckpoint returns the newest durable checkpoint for chain. The read
 // is ORDER BY height DESC LIMIT 1 — never FINAL and never an unordered scan:
 // ReplacingMergeTree replacement is eventual, so pre-merge multiple physical
