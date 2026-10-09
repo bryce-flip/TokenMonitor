@@ -404,17 +404,22 @@ func TestDevnetFollowsFinalizedHead(t *testing.T) {
 | A5 | `eth_getBlockByNumber` costs 80 credits per call on Infura's metering (docs page states it) — poll-cadence credit math | Pattern 1 / cadence | Free-tier exhaustion if polled aggressively; default 60s keeps it ~115k credits/day worst case; operator can lengthen |
 | A6 | TetherToken creation gas fits the devnet block gas limit (0x3938700 = 60M; legacy creation tx gas unknown-but-far-below) | Pattern 6 | Set explicit GasLimit on TransactOpts (3M) and assert mined receipt status |
 
-## Open Questions
+## Open Questions (RESOLVED)
+
+All three questions are resolved; each recommendation below was adopted into a phase plan at planning time.
 
 1. **Should mid-run checkpoint verification run every poll or only before window ingest?**
    - What we know: SYNC-05 wording covers detection generally; restart-time verification is mandatory; per-window verification costs one `eth_getBlockByNumber`.
    - What's unclear: poll-time credit budget vs detection latency tradeoff for the operator's tier.
    - Recommendation: verify at resume AND before each window ingest (skip when idle at head); cheap during catch-up (1/window), ~0 when idle.
+   - **RESOLVED — adopted in 02-01 Task 1 step 6(d):** verify at resume AND before each window ingest; skip the verification call when idle at head.
 2. **Does the operator want the devnet suite wired into the default `go test ./...` experience?**
    - What we know: existing gates skip cleanly without env.
    - Recommendation: keep opt-in (`DEVNET_RPC_URL`), document the one-liner in README §6, consistent with CLICKHOUSE_URL/ETH_RPC_URL.
+   - **RESOLVED — adopted in 02-03 Task 3:** devnet suite stays opt-in behind `DEVNET_RPC_URL` (per D-02's env-gate), README documents the invocation.
 3. **Window-floor failure behavior** — hard stop vs skip-and-flag when even `window_floor` blocks trip the cap.
    - Recommendation: hard stop (fail closed); a range that cannot be fetched must never be silently skipped (SYNC-02's "without skipping a range").
+   - **RESOLVED — adopted in 02-02 Task 1:** fail-closed floor — the run fails with a named error naming the floor and blocked range; the checkpoint does not move (`TestFloorTripFailsClosed`).
 
 ## Environment Availability
 
