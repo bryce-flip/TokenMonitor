@@ -3,6 +3,9 @@ package rpc
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
+	"math/big"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -11,6 +14,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/ethereum/go-ethereum/core/types"
 
 	"TOkenMonitor/internal/config"
 )
@@ -35,17 +40,19 @@ func testConfig() *config.Config {
 // with capMsg whenever the requested span exceeds capSpan, so halving
 // observably shrinks the span (D-05 proofs).
 type cannedRPC struct {
-	chainID       string
-	head          string
-	getLogsFailed bool
-	getLogs429s   int32  // throttle the first N eth_getLogs with -32005
-	throttleMsg   string // throttle error message; empty = "Too Many Requests"
-	capSpan       uint64 // 0 = off; otherwise cap any eth_getLogs span > capSpan
-	capMsg        string // cap error message; empty = "query returned more than 10000 results"
-	getLogsCalls  atomic.Int32
+	chainID             string
+	head                string
+	getLogsFailed       bool
+	getLogs429s         int32  // throttle the first N eth_getLogs with -32005
+	throttleMsg         string // throttle error message; empty = "Too Many Requests"
+	capSpan             uint64 // 0 = off; otherwise cap any eth_getLogs span > capSpan
+	capMsg              string // cap error message; empty = "query returned more than 10000 results"
+	getLogsCalls        atomic.Int32
+	blockByNumberFailed bool // answer eth_getBlockByNumber with an error (tag-probe false path)
 
 	mu    sync.Mutex
 	spans [][2]uint64 // (fromBlock, toBlock) of every eth_getLogs served
+	tags  []string    // first param of every eth_getBlockByNumber served
 }
 
 // hexU64 parses a 0x-prefixed JSON-RPC quantity.
@@ -70,6 +77,13 @@ func (c *cannedRPC) ranges() [][2]uint64 {
 	return append([][2]uint64(nil), c.spans...)
 }
 
+// blockTags returns the first param of every eth_getBlockByNumber served.
+func (c *cannedRPC) blockTags() []string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return append([]string(nil), c.tags...)
+}
+
 func (c *cannedRPC) start(t *testing.T) *httptest.Server {
 	t.Helper()
 	mux := http.NewServeMux()
@@ -89,6 +103,33 @@ func (c *cannedRPC) start(t *testing.T) *httptest.Server {
 			resp["result"] = c.chainID
 		case "eth_blockNumber":
 			resp["result"] = c.head
+		case "eth_getBlockByNumber":
+			var tag string
+			if len(req.Params) > 0 && json.Unmarshal(req.Params[0], &tag) == nil {
+				c.mu.Lock()
+				c.tags = append(c.tags, tag)
+				c.mu.Unlock()
+			}
+			if c.blockByNumberFailed {
+				resp["error"] = map[string]any{"code": -32601, "message": "method not supported"}
+				break
+			}
+			// A null result makes ethclient.HeaderByNumber return a not-found
+			// error, so serve a real (RLP-consistent) header object.
+			b, err := json.Marshal(&types.Header{
+				UncleHash:   types.EmptyUncleHash,
+				TxHash:      types.EmptyRootHash,
+				ReceiptHash: types.EmptyRootHash,
+				Difficulty:  big.NewInt(0),
+				Number:      big.NewInt(1),
+				GasLimit:    30_000_000,
+				Time:        1,
+			})
+			if err != nil {
+				http.Error(w, "marshal header", http.StatusInternalServerError)
+				return
+			}
+			resp["result"] = json.RawMessage(b)
 		case "eth_getLogs":
 			var q struct {
 				FromBlock string `json:"fromBlock"`
@@ -434,4 +475,116 @@ func TestRateLimitExceededMessageIsThrottle(t *testing.T) {
 			t.Fatalf("throttle retried a different range: %+v, want [100 980] (halving would have shrunk it)", r)
 		}
 	}
+}
+
+// assertRedacted fails when err's text carries the endpoint's credentials:
+// it must name the host (URL text survived, redacted) while carrying neither
+// the userinfo pair nor the full credentialed URL.
+func assertRedacted(t *testing.T, err error, credURL, userinfo string) {
+	t.Helper()
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "127.0.0.1") {
+		t.Errorf("error %q does not name the host", msg)
+	}
+	if strings.Contains(msg, userinfo) {
+		t.Errorf("error %q leaks the userinfo pair %q", msg, userinfo)
+	}
+	if strings.Contains(msg, credURL) {
+		t.Errorf("error %q leaks the full credentialed URL", msg)
+	}
+	if strings.Contains(msg, "xxxxx@") || strings.Contains(msg, "secretpass") {
+		t.Errorf("error %q leaks a masked-or-raw password form", msg)
+	}
+}
+
+// TestWrappedErrorsRedactCredentials closes AR-01 / T-02-03: dialing through
+// a userinfo-bearing URL and forcing transport failures on eth_getLogs and
+// eth_getBlockByNumber yields %w-wrapped *url.Error chains — every returned
+// error must render the endpoint as scheme://host only (net/http alone would
+// keep "user:xxxxx@host" in the text).
+func TestWrappedErrorsRedactCredentials(t *testing.T) {
+	canned := &cannedRPC{chainID: "0x1", head: "0x3e8"}
+	srv := canned.start(t)
+	const userinfo = "user:secretpass@"
+	credURL := strings.Replace(srv.URL, "http://", "http://"+userinfo, 1)
+	c, err := New(context.Background(), credURL)
+	if err != nil {
+		assertRedacted(t, err, credURL, userinfo)
+		t.Fatalf("dial through userinfo URL errored: %v", err)
+	}
+	srv.Close() // force connection-refused transport errors wrapping *url.Error
+
+	_, err = c.FetchLogs(context.Background(), testConfig().Tokens[0], nil, 100, 200)
+	assertRedacted(t, err, credURL, userinfo)
+	_, err = c.Header(context.Background(), 100)
+	assertRedacted(t, err, credURL, userinfo)
+	var _ = c.SupportsHeadTag(context.Background()) // false path must not leak either
+	// The scrub itself is deterministic on both leak shapes: the raw URL and
+	// net/http's masked "user:xxxxx@" form.
+	for _, leak := range []string{
+		`post failed: Get "` + credURL + `": dial tcp: connection refused`,
+		`post failed: Get "` + strings.Replace(credURL, "secretpass", "xxxxx", 1) + `": dial tcp: connection refused`,
+	} {
+		scrubbed := scrubURL(credURL, errors.New(leak))
+		if scrubbed.Error() == leak {
+			t.Errorf("scrubURL left %q untouched", leak)
+		}
+		if !strings.Contains(scrubbed.Error(), "http://127.0.0.1") {
+			t.Errorf("scrubbed error %q lost the host rendering", scrubbed.Error())
+		}
+	}
+	// The SIGINT contract survives redaction: a canceled transport error
+	// still satisfies errors.Is(err, context.Canceled) after scrubbing.
+	canceled := scrubURL(credURL, fmt.Errorf(`get: %w`, context.Canceled))
+	if !errors.Is(canceled, context.Canceled) {
+		t.Errorf("scrubbed cancellation lost its errors.Is contract: %v", canceled)
+	}
+	if errors.Is(scrubURL(credURL, errors.New("boom")), context.Canceled) {
+		t.Error("non-canceled error must not masquerade as context.Canceled")
+	}
+}
+
+// TestSupportsHeadTagTrueAndFalse proves the A1 probe: a provider answering
+// eth_getBlockByNumber for the "finalized" tag (params carry the tag string)
+// reports true; one erroring the method reports false without failing.
+func TestSupportsHeadTagTrueAndFalse(t *testing.T) {
+	canned := &cannedRPC{chainID: "0x1", head: "0x3e8"}
+	srv := canned.start(t)
+	c, err := New(context.Background(), srv.URL)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	if !c.SupportsHeadTag(context.Background()) {
+		t.Fatal("provider serving eth_getBlockByNumber must report tag support")
+	}
+	tags := canned.blockTags()
+	if len(tags) == 0 || tags[len(tags)-1] != "finalized" {
+		t.Fatalf("eth_getBlockByNumber params = %v, want the \"finalized\" tag string", tags)
+	}
+
+	canned2 := &cannedRPC{chainID: "0x1", head: "0x3e8", blockByNumberFailed: true}
+	srv2 := canned2.start(t)
+	c2, err := New(context.Background(), srv2.URL)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	if c2.SupportsHeadTag(context.Background()) {
+		t.Fatal("provider erroring eth_getBlockByNumber must report no tag support")
+	}
+}
+
+// TestCloseIsSafe proves IN-08's client half: Close on a dialed client
+// returns without panic and a double Close is tolerated.
+func TestCloseIsSafe(t *testing.T) {
+	canned := &cannedRPC{chainID: "0x1", head: "0x3e8"}
+	srv := canned.start(t)
+	c, err := New(context.Background(), srv.URL)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	c.Close()
+	c.Close() // tolerated
 }

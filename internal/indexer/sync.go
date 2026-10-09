@@ -29,6 +29,11 @@ type ChainReader interface {
 	// under result caps, fail-closed floor, bounded throttle backoff); the
 	// loop never advances the checkpoint on its failure (SYNC-02).
 	FetchLogsResilient(ctx context.Context, token config.Token, topics []common.Hash, from, to, window, floor uint64) ([]types.Log, error)
+	// SupportsHeadTag reports whether the provider serves the consensus
+	// "finalized" block tag (02-RESEARCH A1); Host names the provider
+	// credential-free for the loud downgrade log below.
+	SupportsHeadTag(ctx context.Context) bool
+	Host() string
 }
 
 // EventStore is the storage surface RunSync needs. *storage.Store satisfies
@@ -48,9 +53,9 @@ const Chain = "ethereum"
 // detection seed). Ordinary indexing halts before any window is ingested;
 // recovery is the operator-gated rewind (D-03), never an automatic reset.
 type CheckpointMismatchError struct {
-	Height        uint64
-	ExpectedHash  string
-	ObservedHash  string
+	Height       uint64
+	ExpectedHash string
+	ObservedHash string
 }
 
 func (e *CheckpointMismatchError) Error() string {
@@ -64,6 +69,14 @@ func (e *CheckpointMismatchError) Error() string {
 // checkpoint strictly after the window's InsertEvents is acked (SYNC-03).
 // It returns only on error or context cancellation, never between windows.
 func RunSync(ctx context.Context, cr ChainReader, es EventStore, cfg *config.Config) error {
+	// A1 (02-RESEARCH): finalized-tag support is provider-dependent, and a
+	// provider without it must never be silently treated as finalized-safe —
+	// downgrade loudly to confirmed for the rest of the run.
+	if cfg.HeadPolicy == "finalized" && !cr.SupportsHeadTag(ctx) {
+		slog.Error("RPC provider does not serve the finalized block tag; downgrading head_policy from finalized to confirmed for this run (set head_policy \"confirmed\" explicitly to make this intentional)",
+			"provider", cr.Host(), "missing_capability", "finalized block tag", "downgrade", "finalized->confirmed")
+		cfg.HeadPolicy = "confirmed"
+	}
 	for {
 		if err := ctx.Err(); err != nil {
 			return err

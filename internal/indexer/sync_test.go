@@ -5,10 +5,12 @@
 package indexer_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"math/big"
 	"net/http"
 	"net/http/httptest"
@@ -103,6 +105,9 @@ type cannonRPC struct {
 	throttleN    int32  // throttle the first N eth_getLogs with -32005 "Too Many Requests"
 	capSpan      uint64 // 0 = off; otherwise cap any eth_getLogs span > capSpan
 	capMsg       string // cap error message; empty = "query returned more than 10000 results"
+	// rejectFinalizedTag answers eth_getBlockByNumber "finalized" with an
+	// error — a provider without finalized-tag support (A1 downgrade proof).
+	rejectFinalizedTag bool
 
 	getLogsCalls atomic.Int32
 
@@ -139,6 +144,10 @@ func (c *cannonRPC) start(t *testing.T) *httptest.Server {
 			var tag string
 			if len(req.Params) == 0 || json.Unmarshal(req.Params[0], &tag) != nil {
 				resp["error"] = map[string]any{"code": -32602, "message": "bad params"}
+				break
+			}
+			if tag == "finalized" && c.rejectFinalizedTag {
+				resp["error"] = map[string]any{"code": -32601, "message": "the finalized tag is not supported"}
 				break
 			}
 			n := c.head
@@ -719,5 +728,52 @@ func TestRunSyncFloorTripStopsRunCheckpointUnmoved(t *testing.T) {
 	}
 	if h, _, _ := fake.state(); h != 100 {
 		t.Fatalf("checkpoint moved to %d despite floor trip, want 100", h)
+	}
+}
+
+// TestRunSyncDowngradesToConfirmedLoudlyWhenTagUnsupported proves the A1
+// fallback: a provider that rejects the finalized tag is never silently
+// treated as finalized-safe — RunSync logs a LOUD error naming the provider
+// host and the downgrade, switches to confirmed semantics, and proceeds
+// (seeding at latest minus confirmation_blocks). A silent downgrade fails
+// the captured-log assertions.
+func TestRunSyncDowngradesToConfirmedLoudlyWhenTagUnsupported(t *testing.T) {
+	var buf bytes.Buffer // slog.TextHandler serializes concurrent record writes
+	orig := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
+	t.Cleanup(func() { slog.SetDefault(orig) })
+
+	cannon := &cannonRPC{head: 2100, rejectFinalizedTag: true}
+	srv := cannon.start(t)
+	client, err := rpc.New(context.Background(), srv.URL)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	fake := &fakeEventStore{}
+	cfg := syncConfig() // head_policy finalized, confirmation_blocks 20 -> confirmed head 2080
+
+	errCh, cancel := runSyncAsync(t, client, fake, cfg)
+	waitFor(t, 10*time.Second, "checkpoint at the confirmed head 2080", func() bool {
+		h, _, _ := fake.state()
+		return h == 2080
+	})
+	cancel()
+	awaitCanceled(t, errCh)
+
+	if cfg.HeadPolicy != "confirmed" {
+		t.Fatalf("cfg.HeadPolicy = %q after the unsupported tag, want \"confirmed\"", cfg.HeadPolicy)
+	}
+	log := buf.String()
+	if !strings.Contains(strings.ToLower(log), "downgrad") {
+		t.Fatalf("downgrade was silent; captured log:\n%s", log)
+	}
+	if !strings.Contains(log, "finalized") {
+		t.Fatalf("captured log does not name the missing finalized-tag capability:\n%s", log)
+	}
+	if !strings.Contains(log, "127.0.0.1") {
+		t.Fatalf("captured log does not name the provider host:\n%s", log)
+	}
+	if h, hash, _ := fake.state(); h != 2080 || hash != cannonHash(2080, nil) {
+		t.Fatalf("checkpoint = (%d, %s), want confirmed-semantics seed (2080, %s)", h, hash, cannonHash(2080, nil))
 	}
 }

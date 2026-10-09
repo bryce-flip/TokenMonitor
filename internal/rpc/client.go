@@ -6,8 +6,12 @@ package rpc
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io"
 	"math/big"
+	"net/url"
+	"regexp"
 	"strings"
 	"time"
 
@@ -80,11 +84,77 @@ type Client struct {
 	rawURL string // never logged directly; errors render config.HostOnly(rawURL)
 }
 
+// scrubbedError is the redacted rendering of a provider error: its text is
+// credential-safe (AR-01) while the cancellation signal survives errors.Is —
+// cmd/indexer's SIGINT contract checks errors.Is(err, context.Canceled).
+type scrubbedError struct {
+	msg      string
+	canceled bool
+}
+
+func (e *scrubbedError) Error() string { return e.msg }
+
+func (e *scrubbedError) Is(target error) bool {
+	return e.canceled && (target == context.Canceled || target == context.DeadlineExceeded)
+}
+
+// scrubURL rewrites err's text so no credential of rawURL survives (AR-01 /
+// T-02-03, the Phase 1 deferred redaction): `fmt.Errorf("...: %w", err)`
+// preserves inner *url.Error text that embeds the full credentialed URL —
+// and net/http masks only the password, yielding "user:xxxxx@host" — so the
+// raw URL and any scheme://userinfo@host variant of this endpoint collapse
+// to config.HostOnly(rawURL). The returned error keeps the text (callers and
+// the isResultCapErr/isRateLimitErr classifiers match on message substrings)
+// but not the wrap chain; only the cancellation bit is carried over.
+func scrubURL(rawURL string, err error) error {
+	if err == nil {
+		return nil
+	}
+	s := err.Error()
+	host := config.HostOnly(rawURL)
+	s = strings.ReplaceAll(s, rawURL, host)
+	if u, perr := url.Parse(rawURL); perr == nil && u.User != nil && u.Scheme != "" && u.Host != "" {
+		if re, rerr := regexp.Compile(regexp.QuoteMeta(u.Scheme) + `://[^/]*@` + regexp.QuoteMeta(u.Host)); rerr == nil {
+			s = re.ReplaceAllString(s, u.Scheme+"://"+u.Host)
+		}
+	}
+	return &scrubbedError{
+		msg:      s,
+		canceled: errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded),
+	}
+}
+
+// scrub is scrubURL bound to this client's endpoint; every exported method
+// routes its %w-wrapped provider errors through it so no return path can
+// leak the raw URL.
+func (c *Client) scrub(err error) error { return scrubURL(c.rawURL, err) }
+
+// Host returns the credential-free scheme://host rendering of the endpoint,
+// for callers that must name the provider in logs (AR-01 hygiene).
+func (c *Client) Host() string { return config.HostOnly(c.rawURL) }
+
+// Close releases the underlying transport (IN-08). Tolerates nil-safe and
+// repeated calls; the run command's Close wiring lands with plan 02-03.
+func (c *Client) Close() {
+	if cl, ok := any(c.ec).(io.Closer); ok {
+		_ = cl.Close()
+	}
+}
+
+// SupportsHeadTag reports whether the provider serves the consensus
+// "finalized" block tag (02-RESEARCH A1: the capability is provider-dependent
+// and was impossible to probe live during research). Any error reads as
+// unsupported; callers downgrade loudly to confirmed, never silently.
+func (c *Client) SupportsHeadTag(ctx context.Context) bool {
+	_, err := c.headerByNumber(ctx, big.NewInt(int64(ethrpc.FinalizedBlockNumber)), "tag finalized")
+	return err == nil
+}
+
 // New dials the Ethereum JSON-RPC endpoint at rawURL.
 func New(ctx context.Context, rawURL string) (*Client, error) {
 	ec, err := ethclient.DialContext(ctx, rawURL)
 	if err != nil {
-		return nil, fmt.Errorf("rpc dial %s: %w", config.HostOnly(rawURL), err)
+		return nil, scrubURL(rawURL, fmt.Errorf("rpc dial %s: %w", config.HostOnly(rawURL), err))
 	}
 	return &Client{ec: ec, rawURL: rawURL}, nil
 }
@@ -103,14 +173,14 @@ func (c *Client) Probe(ctx context.Context, cfg *config.Config, from, to uint64)
 	}
 	chainID, err := c.ec.ChainID(ctx)
 	if err != nil {
-		return fmt.Errorf("probe %s: eth_chainId: %w", config.HostOnly(c.rawURL), err)
+		return c.scrub(fmt.Errorf("probe %s: eth_chainId: %w", config.HostOnly(c.rawURL), err))
 	}
 	if chainID.Int64() != cfg.ChainID {
 		return fmt.Errorf("probe %s: chain id %d, want %d", config.HostOnly(c.rawURL), chainID.Int64(), cfg.ChainID)
 	}
 	head, err := c.ec.BlockNumber(ctx)
 	if err != nil {
-		return fmt.Errorf("probe %s: eth_blockNumber: %w", config.HostOnly(c.rawURL), err)
+		return c.scrub(fmt.Errorf("probe %s: eth_blockNumber: %w", config.HostOnly(c.rawURL), err))
 	}
 	eligible := uint64(0) // head below the confirmation depth: nothing is eligible
 	if head > cfg.ConfirmationBlocks {
@@ -131,8 +201,8 @@ func (c *Client) Probe(ctx context.Context, cfg *config.Config, from, to uint64)
 		_, err := c.ec.FilterLogs(ctx, sampleQuery)
 		return err
 	}); err != nil {
-		return fmt.Errorf("probe %s: sample eth_getLogs at block %d for %s: %w (provider may not serve historical logs)",
-			config.HostOnly(c.rawURL), from, token.Symbol, err)
+		return c.scrub(fmt.Errorf("probe %s: sample eth_getLogs at block %d for %s: %w (provider may not serve historical logs)",
+			config.HostOnly(c.rawURL), from, token.Symbol, err))
 	}
 	return nil
 }
@@ -152,7 +222,7 @@ func (c *Client) FetchLogs(ctx context.Context, token config.Token, topics []com
 		logs, err = c.ec.FilterLogs(ctx, query)
 		return err
 	}); err != nil {
-		return nil, fmt.Errorf("eth_getLogs %s %s blocks %d-%d: %w", token.Symbol, config.HostOnly(c.rawURL), from, to, err)
+		return nil, c.scrub(fmt.Errorf("eth_getLogs %s %s blocks %d-%d: %w", token.Symbol, config.HostOnly(c.rawURL), from, to, err))
 	}
 	return logs, nil
 }
@@ -177,7 +247,7 @@ func (c *Client) FetchLogsResilient(ctx context.Context, token config.Token, top
 	start := from
 	for start <= to {
 		if err := ctx.Err(); err != nil {
-			return nil, fmt.Errorf("eth_getLogs %s %s blocks %d-%d: %w", token.Symbol, config.HostOnly(c.rawURL), from, to, err)
+			return nil, c.scrub(fmt.Errorf("eth_getLogs %s %s blocks %d-%d: %w", token.Symbol, config.HostOnly(c.rawURL), from, to, err))
 		}
 		if remaining := to - start + 1; size > remaining {
 			size = remaining
@@ -228,7 +298,7 @@ func (c *Client) headerByNumber(ctx context.Context, num *big.Int, what string) 
 		h, err = c.ec.HeaderByNumber(ctx, num)
 		return err
 	}); err != nil {
-		return nil, fmt.Errorf("eth_getBlockByNumber %s %s: %w", config.HostOnly(c.rawURL), what, err)
+		return nil, c.scrub(fmt.Errorf("eth_getBlockByNumber %s %s: %w", config.HostOnly(c.rawURL), what, err))
 	}
 	return h, nil
 }
@@ -257,7 +327,7 @@ func (c *Client) EligibleHead(ctx context.Context, cfg *config.Config) (uint64, 
 			head, err = c.ec.BlockNumber(ctx)
 			return err
 		}); err != nil {
-			return 0, common.Hash{}, fmt.Errorf("eth_blockNumber %s: %w", config.HostOnly(c.rawURL), err)
+			return 0, common.Hash{}, c.scrub(fmt.Errorf("eth_blockNumber %s: %w", config.HostOnly(c.rawURL), err))
 		}
 		height := uint64(0) // head shallower than the depth: nothing is eligible
 		if head > cfg.ConfirmationBlocks {
