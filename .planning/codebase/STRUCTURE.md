@@ -1,10 +1,10 @@
 ---
-last_mapped_commit: 75f060c579368cd601a8d60ea40e6790a8509ec5
-last_mapped_at: 2026-10-08
+last_mapped_commit: b219d36
+last_mapped_at: 2026-10-09
 ---
 # Codebase Structure
 
-**Analysis Date:** 2026-10-08
+**Analysis Date:** 2026-10-09
 
 ## Directory Layout
 
@@ -13,16 +13,16 @@ TokenMonitor/
 ├── go.mod, go.sum         # Go module + pinned dependency lockfile
 ├── requirements.md        # MVP specification
 ├── cmd/
-│   └── indexer/           # bounded ingest CLI entry point
+│   └── indexer/           # continuous ingest CLI (`run` subcommand, default)
 ├── config/
-│   └── tokens.json        # chain_id, confirmation depth, USDT/USDC contracts
+│   └── tokens.json        # chain_id, head policy, window/poll sizing, USDT/USDC contracts
 ├── internal/
-│   ├── config/            # JSON load/validate, env lookups, URL redaction
-│   ├── indexer/           # topic0 constants + supply-event decoder (+ tests)
-│   ├── rpc/               # ethclient wrapper: Probe/FetchLogs/Header (+ tests)
-│   └── storage/           # ClickHouse native store (+ integration tests)
+│   ├── config/            # JSON load/validate with defaults, env lookups, URL redaction
+│   ├── indexer/           # supply-event decoder + RunSync continuous loop (+ tests)
+│   ├── rpc/               # ethclient wrapper: Probe/FetchLogs/Header/EligibleHead (+ tests)
+│   └── storage/           # ClickHouse native store: events + checkpoint (+ integration tests)
 ├── migrations/
-│   └── clickhouse.sql     # stablecoin_events DDL (ReplacingMergeTree)
+│   └── clickhouse.sql     # stablecoin_events + indexer_checkpoint DDL (ReplacingMergeTree)
 └── .planning/
     └── codebase/          # Codebase analysis documents
 ```
@@ -44,20 +44,21 @@ TokenMonitor/
 ## Key File Locations
 
 **Entry Points:**
-- `cmd/indexer/main.go` — bounded ingest command (`-config`, `-from`, `-to`).
+- `cmd/indexer/main.go` — continuous sync command (`run` subcommand, default; `-config`, optional `-from` seed).
 
 **Configuration:**
-- `config/tokens.json`: chain_id, confirmation_blocks, token contracts/decimals.
+- `config/tokens.json`: chain_id, head_policy, confirmation_blocks, window_blocks, window_floor, poll_seconds, optional start_block, token contracts/decimals.
 - `go.mod`/`go.sum`: module `TOkenMonitor`, pinned go-ethereum and clickhouse-go.
 - Runtime env: `ETH_RPC_URL` (required), `CLICKHOUSE_URL` (defaults to `clickhouse://default@127.0.0.1:9000/default`).
 
 **Core Logic:**
 - `internal/indexer/decoder.go`: pinned topic0 constants, `SupplyTopics`, `DecodeSupplyEvent`.
-- `internal/rpc/client.go`: `Probe` (D-02 fail-fast), `FetchLogs`, `Header`.
-- `internal/storage/clickhouse.go`: `EnsureSchema`, `InsertEvents`, `Inspect`.
+- `internal/indexer/sync.go`: `RunSync` continuous window loop over the `ChainReader`/`EventStore` seams; `CheckpointMismatchError`.
+- `internal/rpc/client.go`: `Probe` (D-02 fail-fast), `FetchLogs`, `Header`, `EligibleHead` (finalized tag / confirmed latest-minus-depth).
+- `internal/storage/clickhouse.go`: `EnsureSchema` (statement-splitting), `InsertEvents`, `Inspect`, `WriteCheckpoint`, `ReadCheckpoint`.
 
 **Testing:**
-- `internal/indexer/decoder_test.go`, `internal/rpc/client_test.go` (offline); `internal/storage/clickhouse_test.go` (integration, gated on `CLICKHOUSE_URL`).
+- `internal/indexer/decoder_test.go`, `internal/indexer/sync_test.go` (external package, canned JSON-RPC + fake store), `internal/rpc/client_test.go` (offline); `internal/storage/clickhouse_test.go` (integration, gated on `CLICKHOUSE_URL`).
 
 ## Naming Conventions
 

@@ -23,7 +23,7 @@ The user-provided [source specification](../requirements.md) defines the intende
 - [ ] **SYNC-01**: Indexer fetches bounded block ranges through HTTP RPC and continuously advances only through the configured confirmed or finalized head.
 - [ ] **SYNC-02**: Indexer retries transient RPC failures and rate limits without skipping a range or advancing its checkpoint.
 - [ ] **SYNC-03**: Indexer resumes after restart from a durable block-number-and-hash checkpoint that advances only after that range's events are durably accepted.
-- [ ] **SYNC-04**: Replaying a processed range does not change logical event counts or supply/issuance sums, even before ClickHouse background merges finish.
+- [x] **SYNC-04**: Replaying a processed range does not change logical event counts or supply/issuance sums, even before ClickHouse background merges finish.
 - [ ] **SYNC-05**: Indexer detects a checkpoint block-hash mismatch and supports a verified rewind that excludes orphaned events and rebuilds affected derived data before normal reporting resumes.
 
 ### Supply and Reconciliation
@@ -76,7 +76,7 @@ The user-provided [source specification](../requirements.md) defines the intende
 | SYNC-01 | Phase 2 | Pending |
 | SYNC-02 | Phase 2 | Pending |
 | SYNC-03 | Phase 2 | Pending |
-| SYNC-04 | Phase 2 | Pending |
+| SYNC-04 | Phase 2 | Complete |
 | SYNC-05 | Phase 2 | Pending |
 | SUPP-01 | Phase 3 | Pending |
 | SUPP-02 | Phase 3 | Pending |

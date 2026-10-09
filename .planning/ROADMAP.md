@@ -46,11 +46,11 @@ Plans:
   3. Replaying a processed range leaves logical event counts and issuance sums unchanged, including before ClickHouse background merges finish.
   4. A checkpoint hash mismatch stops ordinary reporting until a verified rewind excludes orphaned events and rebuilds any affected derived data.
 
-**Plans**: 3 plans
+**Plans**: 1/3 plans executed
 
 Plans:
 **Wave 1**
-- [ ] 02-01-PLAN.md — Tracer: continuous checkpointed sync through the configured head (head policy, durable checkpoint, advance-after-accept, crash-safe resume, replay idempotence proofs)
+- [x] 02-01-PLAN.md — Tracer: continuous checkpointed sync through the configured head (head policy, durable checkpoint, advance-after-accept, crash-safe resume, replay idempotence proofs)
 
 **Wave 2** *(blocked on Wave 1 completion; 02-02 and 02-03 are file-disjoint and run in parallel)*
 - [ ] 02-02-PLAN.md — Failure discrimination: -32005 cap/timeout vs throttle split, FetchLogsResilient halving with fail-closed floor, credential redaction (AR-01), finalized-tag probe fallback (A1)
@@ -91,7 +91,7 @@ Plans:
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 1. Live Supply Event Path | 2/2 | Complete    | 2026-10-08 |
-| 2. Reliable Canonical Indexing | 0/3 | Not started | - |
+| 2. Reliable Canonical Indexing | 1/3 | In Progress | - |
 | 3. Anchored Supply Reconciliation | 0/TBD | Not started | - |
 | 4. Issuance and Operator Views | 0/TBD | Not started | - |
 

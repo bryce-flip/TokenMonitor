@@ -2,18 +2,18 @@
 gsd_state_version: "1.0"
 milestone: v1.0
 current_phase: 2
-current_phase_name: reliable-canonical-indexing
-status: Phase 1 shipped — pushed to origin/main (56e3961..5bcf4f4)
-stopped_at: Phase 2 context gathered (Claude-decided under user delegation)
-last_updated: "2026-10-09T09:37:22.087Z"
+current_phase_name: Reliable Canonical Indexing
+status: executing
+stopped_at: Completed 02-01-PLAN.md
+last_updated: "2026-10-09T10:20:17.281Z"
 last_activity: 2026-10-09
-last_activity_desc: Phase 2 planning complete
-state_head: 8c4cd7fa333a7103f92ae4f7bf02e5d8e8f3d5fc
+last_activity_desc: Phase 2 execution started
+state_head: 92f100baffdf1aef13718189e4fc4e62c1b86a32
 progress:
   total_phases: 4
   completed_phases: 1
   total_plans: 5
-  completed_plans: 2
+  completed_plans: 3
 ---
 
 # Project State
@@ -23,14 +23,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-10-08)
 
 **Core value:** Give a trustworthy, reproducible view of USDT and USDC supply and mint/burn activity on Ethereum Mainnet.
-**Current focus:** Phase 1 — Live Supply Event Path
+**Current focus:** Phase 2 — Reliable Canonical Indexing
 
 ## Current Position
 
-Phase: 2 (reliable-canonical-indexing) — READY TO EXECUTE
-Plan: Not started
-Status: Phase 1 shipped — pushed to origin/main (56e3961..5bcf4f4)
-Last activity: 2026-10-09 — Phase 2 planning complete
+Phase: 2 (Reliable Canonical Indexing) — EXECUTING
+Plan: 2 of 3
+Status: Ready to execute
+Last activity: 2026-10-09 — Phase 2 execution started
 
 Progress: [███░░░░░░░] 25%
 
@@ -57,6 +57,7 @@ Progress: [███░░░░░░░] 25%
 |------|----------|-------|-------|
 | Phase 01 P01 | 31min | 3 tasks | 12 files |
 | Phase 01 P02 | 26min | 2 tasks | 4 files |
+| Phase 02 P01 | 38min | 2 tasks | 11 files |
 
 ## Accumulated Context
 
@@ -69,6 +70,10 @@ Decisions are logged in PROJECT.md. Phase 1 proves real RPC logs through token-s
 - [Phase 01]: 01-02: free-tier rate-limit tolerance implemented as bounded retry in internal/rpc (probe, fetch, header) after live 429/-32005 bursts deterministically blocked ingest
 - [Phase 01]: 01-02: live USDC row-count assertion is per fixture receipt plus a block-wide 1:1 zero-address-Transfer invariant (block 0x1638e19 carries unrelated extra mints)
 - [Phase 01]: 01-02: smoke window sized to provider result cap — Infura rejects eth_getLogs over 10k results, so ~40 blocks for USDC; documented in README, chunked fetching deferred to continuous sync
+- [Phase 02]: 02-01: EligibleHead resolves finalized via ethclient HeaderByNumber tag constant (go-ethereum serializes the tag; no hand-rolled JSON-RPC); confirmed = latest minus confirmation_blocks clamped at 0
+- [Phase 02]: 02-01: RunSync depends on ChainReader/EventStore structural seams (rpc imports indexer for SupplyTopics; reverse import would cycle); proof suite pins the seams in external package indexer_test
+- [Phase 02]: 02-01: checkpoint reads are ORDER BY height DESC LIMIT 1, never FINAL; ReplacingMergeTree(height) keeps the merged survivor at max height under out-of-order writes
+- [Phase 02]: 02-01: EnsureSchema applies migrations statement-by-statement (native protocol rejects multi-statement; comment lines carry semicolons and apostrophes)
 
 ### Pending Todos
 
@@ -87,6 +92,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-10-09T07:39:21.221Z
-Stopped at: Phase 2 context gathered (Claude-decided under user delegation)
-Resume file: .planning/phases/02-reliable-canonical-indexing/02-CONTEXT.md
+Last session: 2026-10-09T10:19:54.594Z
+Stopped at: Completed 02-01-PLAN.md
+Resume file: None
