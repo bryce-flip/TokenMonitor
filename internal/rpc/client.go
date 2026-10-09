@@ -15,6 +15,7 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/ethclient"
+	ethrpc "github.com/ethereum/go-ethereum/rpc"
 
 	"TOkenMonitor/internal/config"
 	"TOkenMonitor/internal/indexer"
@@ -74,6 +75,11 @@ func New(ctx context.Context, rawURL string) (*Client, error) {
 // empty sample result passes — the probe proves historical query capability,
 // not content.
 func (c *Client) Probe(ctx context.Context, cfg *config.Config, from, to uint64) error {
+	// IN-03: Validate rejects an empty token list, but Probe must not index
+	// cfg.Tokens[0] on a config that skipped validation.
+	if len(cfg.Tokens) == 0 {
+		return fmt.Errorf("probe %s: no tokens configured; at least one token is required for the sample eth_getLogs", config.HostOnly(c.rawURL))
+	}
 	chainID, err := c.ec.ChainID(ctx)
 	if err != nil {
 		return fmt.Errorf("probe %s: eth_chainId: %w", config.HostOnly(c.rawURL), err)
@@ -133,13 +139,63 @@ func (c *Client) FetchLogs(ctx context.Context, token config.Token, topics []com
 // Header returns the canonical block header (hash + timestamp) at number.
 func (c *Client) Header(ctx context.Context, number uint64) (*types.Header, error) {
 	num := new(big.Int).SetUint64(number)
+	h, err := c.headerByNumber(ctx, num, fmt.Sprintf("block %d", number))
+	if err != nil {
+		return nil, err
+	}
+	return h, nil
+}
+
+// headerByNumber fetches a header by big.Int number (negative values are the
+// go-ethereum block tags) with rate-limit retry and HostOnly error wrapping.
+func (c *Client) headerByNumber(ctx context.Context, num *big.Int, what string) (*types.Header, error) {
 	var h *types.Header
 	if err := withRateLimitRetry(ctx, func() error {
 		var err error
 		h, err = c.ec.HeaderByNumber(ctx, num)
 		return err
 	}); err != nil {
-		return nil, fmt.Errorf("eth_getBlockByNumber %s block %d: %w", config.HostOnly(c.rawURL), number, err)
+		return nil, fmt.Errorf("eth_getBlockByNumber %s %s: %w", config.HostOnly(c.rawURL), what, err)
 	}
 	return h, nil
+}
+
+// EligibleHead resolves the highest block the configured head policy allows
+// the sync loop to ingest (D-01): "finalized" reads the consensus finalized
+// tag; "confirmed" reads latest and subtracts confirmation_blocks (clamped
+// at 0). Both paths carry the provider's canonical hash for that height.
+func (c *Client) EligibleHead(ctx context.Context, cfg *config.Config) (uint64, common.Hash, error) {
+	switch cfg.HeadPolicy {
+	case "finalized":
+		// go-ethereum serializes the tag constant to "finalized" itself
+		// (02-RESEARCH "Don't Hand-Roll", verified in v1.17.7).
+		h, err := c.headerByNumber(ctx, big.NewInt(int64(ethrpc.FinalizedBlockNumber)), "tag finalized")
+		if err != nil {
+			return 0, common.Hash{}, err
+		}
+		if h == nil || h.Number == nil {
+			return 0, common.Hash{}, fmt.Errorf("eligible head %s: finalized tag returned no header", config.HostOnly(c.rawURL))
+		}
+		return h.Number.Uint64(), h.Hash(), nil
+	case "confirmed":
+		var head uint64
+		if err := withRateLimitRetry(ctx, func() error {
+			var err error
+			head, err = c.ec.BlockNumber(ctx)
+			return err
+		}); err != nil {
+			return 0, common.Hash{}, fmt.Errorf("eth_blockNumber %s: %w", config.HostOnly(c.rawURL), err)
+		}
+		height := uint64(0) // head shallower than the depth: nothing is eligible
+		if head > cfg.ConfirmationBlocks {
+			height = head - cfg.ConfirmationBlocks
+		}
+		h, err := c.Header(ctx, height)
+		if err != nil {
+			return 0, common.Hash{}, err
+		}
+		return height, h.Hash(), nil
+	default:
+		return 0, common.Hash{}, fmt.Errorf("eligible head %s: unknown head_policy %q (want \"finalized\" or \"confirmed\")", config.HostOnly(c.rawURL), cfg.HeadPolicy)
+	}
 }

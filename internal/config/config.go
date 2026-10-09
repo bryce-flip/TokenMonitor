@@ -26,10 +26,16 @@ type Token struct {
 type Config struct {
 	ChainID            int64   `json:"chain_id"`
 	ConfirmationBlocks uint64  `json:"confirmation_blocks"`
+	HeadPolicy         string  `json:"head_policy"` // finalized | confirmed (D-01)
+	WindowBlocks       uint64  `json:"window_blocks"`
+	WindowFloor        uint64  `json:"window_floor"`
+	PollSeconds        uint64  `json:"poll_seconds"`
+	StartBlock         uint64  `json:"start_block"` // 0 = unset, backfill opt-in (D-04)
 	Tokens             []Token `json:"tokens"`
 }
 
-// Load reads and parses the JSON config at path.
+// Load reads and parses the JSON config at path, applying the D-01/D-04/D-05
+// defaults whenever a field carries its JSON zero value.
 func Load(path string) (*Config, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -38,6 +44,18 @@ func Load(path string) (*Config, error) {
 	var cfg Config
 	if err := json.Unmarshal(data, &cfg); err != nil {
 		return nil, fmt.Errorf("config parse %s: %w", path, err)
+	}
+	if cfg.HeadPolicy == "" {
+		cfg.HeadPolicy = "finalized"
+	}
+	if cfg.WindowBlocks == 0 {
+		cfg.WindowBlocks = 5000
+	}
+	if cfg.WindowFloor == 0 {
+		cfg.WindowFloor = 100
+	}
+	if cfg.PollSeconds == 0 {
+		cfg.PollSeconds = 60
 	}
 	return &cfg, nil
 }
@@ -49,20 +67,39 @@ func Load(path string) (*Config, error) {
 // being silently skipped mid-run.
 var supportedSymbols = map[string]bool{"USDT": true, "USDC": true}
 
-// Validate enforces the Phase 1 invariants: Mainnet only, a positive
-// confirmation depth, at least one well-formed, supported-symbol, uniquely
-// named token.
+// Validate enforces the startup invariants: Mainnet only, a legal head
+// policy with its dependent bounds (D-01), sane window/poll sizing (D-05),
+// and at least one well-formed, supported-symbol, uniquely named token with
+// a unique contract address (IN-08: two tokens sharing a contract would
+// double-count every event).
 func (c *Config) Validate() error {
 	if c.ChainID != 1 {
 		return fmt.Errorf("config: chain_id must be 1 (Ethereum Mainnet), got %d", c.ChainID)
 	}
-	if c.ConfirmationBlocks == 0 {
-		return fmt.Errorf("config: confirmation_blocks must be > 0")
+	switch c.HeadPolicy {
+	case "finalized", "confirmed":
+	default:
+		return fmt.Errorf("config: head_policy must be \"finalized\" or \"confirmed\", got %q", c.HeadPolicy)
+	}
+	// D-01: confirmation depth only applies to the confirmed policy; the
+	// finalized head needs no depth (Phase 1 required it unconditionally).
+	if c.HeadPolicy == "confirmed" && c.ConfirmationBlocks == 0 {
+		return fmt.Errorf("config: confirmation_blocks must be > 0 when head_policy is \"confirmed\"")
+	}
+	if c.WindowBlocks == 0 {
+		return fmt.Errorf("config: window_blocks must be > 0")
+	}
+	if c.WindowFloor == 0 || c.WindowFloor > c.WindowBlocks {
+		return fmt.Errorf("config: window_floor must be > 0 and <= window_blocks (%d), got %d", c.WindowBlocks, c.WindowFloor)
+	}
+	if c.PollSeconds == 0 {
+		return fmt.Errorf("config: poll_seconds must be > 0")
 	}
 	if len(c.Tokens) == 0 {
 		return fmt.Errorf("config: at least one token is required")
 	}
 	seen := make(map[string]bool, len(c.Tokens))
+	seenContract := make(map[string]bool, len(c.Tokens))
 	for _, t := range c.Tokens {
 		if strings.TrimSpace(t.Symbol) == "" {
 			return fmt.Errorf("config: token with contract %s has an empty symbol", t.Contract)
@@ -77,6 +114,11 @@ func (c *Config) Validate() error {
 		if !common.IsHexAddress(t.Contract) {
 			return fmt.Errorf("config: token %s contract %q is not a valid hex address", t.Symbol, t.Contract)
 		}
+		contract := strings.ToLower(t.Contract)
+		if seenContract[contract] {
+			return fmt.Errorf("config: duplicate token contract address %s (tokens %q and another share it); two tokens on one contract would double-count every event", t.Contract, t.Symbol)
+		}
+		seenContract[contract] = true
 		if t.Decimals > 18 {
 			return fmt.Errorf("config: token %s decimals %d out of range 0..18", t.Symbol, t.Decimals)
 		}

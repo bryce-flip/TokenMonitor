@@ -1,10 +1,11 @@
 # Ethereum Stablecoin Monitor
 
 Indexes USDT and USDC supply-changing events on Ethereum Mainnet: a Go
-indexer reads each contract's supply events over a bounded block range and
-stores them with exact raw amounts and full provenance in ClickHouse for SQL
-inspection. Phase 1 scope: bounded, operator-invoked runs; continuous sync
-and dashboards come later.
+indexer continuously follows the configured eligible head (finalized by
+default), reads each contract's supply events in bounded windows, and stores
+them with exact raw amounts and full provenance in ClickHouse for SQL
+inspection. Restarts resume from a durable block-number-and-hash checkpoint;
+replays collapse to one row per event. Dashboards come later.
 
 ## 1. Prerequisites
 
@@ -49,45 +50,62 @@ Optional — the ClickHouse DSN (this is also the default when unset):
 export CLICKHOUSE_URL=clickhouse://default@127.0.0.1:9000/default
 ```
 
-Token metadata and confirmation policy live in `config/tokens.json`:
+Token metadata, head policy, and window sizing live in `config/tokens.json`:
 
-| Field | Meaning |
-|-------|---------|
-| `chain_id` | Must be 1 (Ethereum Mainnet); the provider probe rejects anything else |
-| `confirmation_blocks` | Only blocks at or below `head - confirmation_blocks` may be ingested |
-| `tokens[].symbol` | `USDT` or `USDC` (MVP scope) |
-| `tokens[].issuer` | Documentation only (Tether, Circle) |
-| `tokens[].contract` | The deployed token contract address |
-| `tokens[].decimals` | Raw-unit scale for human reading (6 for both tokens) |
+| Field | Default | Meaning |
+|-------|---------|---------|
+| `chain_id` | — | Must be 1 (Ethereum Mainnet); the provider probe rejects anything else |
+| `head_policy` | `finalized` | Which head the sync follows: `finalized` (consensus finalized tag, default — reorg-safe) or `confirmed` (latest minus `confirmation_blocks`) |
+| `confirmation_blocks` | 20 | Only used when `head_policy` is `confirmed`; blocks at or below `head - confirmation_blocks` are eligible |
+| `window_blocks` | 5000 | Blocks per `eth_getLogs` window per token |
+| `window_floor` | 100 | Lower bound for window halving on provider result caps |
+| `poll_seconds` | 60 | Sleep between polls once caught up with the head |
+| `start_block` | unset | Backfill opt-in: seeds the checkpoint at this block. Unset = start at the current eligible head and index forward only |
+| `tokens[].symbol` | — | `USDT` or `USDC` (MVP scope) |
+| `tokens[].issuer` | — | Documentation only (Tether, Circle) |
+| `tokens[].contract` | — | The deployed token contract address (must be unique across tokens) |
+| `tokens[].decimals` | — | Raw-unit scale for human reading (6 for both tokens) |
 
-## 4. Bounded ingest
+## 4. Continuous ingest
 
 ```sh
-go run ./cmd/indexer -config config/tokens.json -from <N> -to <M>
+go run ./cmd/indexer run            # or just: go run ./cmd/indexer
+go run ./cmd/indexer -from <N>      # seed the checkpoint at block N (backfill opt-in)
 ```
 
-Rules and tips:
+Behavior:
 
-- `-from` and `-to` are inclusive and must be given together; `-from <= -to`.
-- `-to` must not exceed `head - confirmation_blocks` (20 with the shipped
-  config). The fail-fast provider probe enforces this and exits non-zero
-  otherwise, before any data is fetched (decision D-02). The probe also
-  verifies chain id 1 and that the provider serves historical `eth_getLogs`.
-- To pick a recent confirmed window: get the current head (any block
-  explorer, or an `eth_blockNumber` call against your endpoint), then ingest
-  `head - confirmation_blocks - N` through `head - confirmation_blocks`.
-- Mind the provider's per-query result cap. Infura, for example, rejects an
-  `eth_getLogs` returning more than 10,000 logs and names a suggested
-  sub-range in the error. USDC emits roughly 70-140 Transfer logs per block,
-  so keep windows under ~40 blocks there (USDT-only ranges can be much
-  larger — its supply topics are rare).
-- A run is idempotent: re-ingesting the same range collapses to one row per
-  event (ReplacingMergeTree keyed on full event identity, read with FINAL),
-  so a failed run can simply be retried with the same command.
+- The indexer follows the configured `head_policy` head in bounded windows
+  of `window_blocks` and keeps polling (`poll_seconds`) as new eligible
+  blocks arrive. Ctrl-C stops it cleanly between windows.
+- Every window is verified and checkpointed: the durable checkpoint records
+  `(block_number, block_hash)` and advances only after the window's events
+  are durably stored. A crash or restart resumes exactly at the checkpoint;
+  a crash between the event insert and the checkpoint write simply makes the
+  restart re-process that window — replays collapse to one row per event
+  (ReplacingMergeTree keyed on full event identity, read with FINAL), so
+  re-running is always safe.
+- On startup without a checkpoint, the run seeds at `start_block` when
+  configured (or the `-from` flag), otherwise at the current eligible head,
+  and indexes forward only — it never back-fills history unless you ask.
+- If the provider's canonical header at the checkpointed height no longer
+  matches the checkpointed hash (a displaced finalized block — a
+  catastrophic consensus or hostile-provider event), the indexer halts
+  ordinary indexing with a loud diagnostic naming the block and both hashes
+  and exits non-zero. Recovery is a manual, verified rewind (a `rewind`
+  subcommand lands in a later phase); the indexer never auto-heals this.
+- The fail-fast provider probe (chain id 1, confirmed-range boundary,
+  historical `eth_getLogs` sample) still runs before any ingest.
 - Free-tier providers rate-limit bursty requests; the indexer automatically
   retries throttled requests (HTTP 429 / JSON-RPC -32005) with bounded
-  backoff. Sustained throttling can still fail a run — re-running the same
-  command is safe and cheap (idempotent).
+  backoff.
+- The Phase 1 bounded `-from <N> -to <M>` one-shot mode is superseded by the
+  continuous loop; `-from` now means "seed the checkpoint at N".
+- Mind the provider's per-query result cap. Infura, for example, rejects an
+  `eth_getLogs` returning more than 10,000 logs. The default 5000-block
+  window is safe for USDT (its supply topics are rare); dense USDC ranges
+  may still need a smaller `window_blocks` until automatic window halving
+  lands.
 
 ## 5. Inspection
 

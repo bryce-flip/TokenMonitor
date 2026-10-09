@@ -1,20 +1,17 @@
-// Command indexer runs one bounded Mainnet ingest over a configured block
-// range: load config -> fail-fast provider probe (D-02) -> per-token
-// filtered eth_getLogs -> decode -> ClickHouse insert -> SQL inspection.
+// Command indexer continuously maintains the Mainnet supply-event history:
+// load config -> fail-fast provider probe (D-02) -> follow the configured
+// eligible head in bounded windows -> decode -> ClickHouse insert -> advance
+// the durable checkpoint (SYNC-01/SYNC-03). The default subcommand is `run`.
 package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"log/slog"
 	"os"
-	"strings"
-	"text/tabwriter"
-	"time"
-
-	"github.com/ethereum/go-ethereum/common"
-	"github.com/ethereum/go-ethereum/core/types"
+	"os/signal"
 
 	"TOkenMonitor/internal/config"
 	"TOkenMonitor/internal/indexer"
@@ -24,32 +21,29 @@ import (
 
 func main() {
 	configPath := flag.String("config", "config/tokens.json", "path to token config JSON")
-	fromFlag := flag.Uint64("from", 0, "first block of the range (inclusive)")
-	toFlag := flag.Uint64("to", 0, "last block of the range (inclusive)")
+	fromFlag := flag.Uint64("from", 0, "seed the sync checkpoint at this block (backfill opt-in, D-04); 0 starts at the current eligible head")
 	flag.Parse()
 
-	from, to := *fromFlag, *toFlag
-	set := map[string]bool{}
-	flag.Visit(func(f *flag.Flag) { set[f.Name] = true })
-	switch {
-	case set["from"] != set["to"]:
-		fmt.Fprintln(os.Stderr, "error: -from and -to must be provided together")
-		os.Exit(1)
-	case !set["from"]:
-		fmt.Fprintln(os.Stderr, "error: -from and -to are required (bounded block range)")
-		os.Exit(1)
-	case from > to:
-		fmt.Fprintf(os.Stderr, "error: -from (%d) must be <= -to (%d)\n", from, to)
-		os.Exit(1)
+	sub := "run"
+	if args := flag.Args(); len(args) > 0 {
+		sub = args[0]
+	}
+	if sub != "run" {
+		fmt.Fprintf(os.Stderr, "error: unknown subcommand %q; usage: indexer [run]\n", sub)
+		os.Exit(2)
 	}
 
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, nil)))
-	ctx := context.Background()
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer stop()
 
 	cfg, err := config.Load(*configPath)
 	if err != nil {
 		slog.Error("config", "err", err)
 		os.Exit(1)
+	}
+	if *fromFlag != 0 {
+		cfg.StartBlock = *fromFlag
 	}
 	if err := cfg.Validate(); err != nil {
 		slog.Error("config", "err", err)
@@ -67,78 +61,24 @@ func main() {
 		slog.Error("rpc", "err", err)
 		os.Exit(1)
 	}
-	if err := client.Probe(ctx, cfg, from, to); err != nil {
+
+	// Probe at the eligible head (or the seed when start_block sits below
+	// it), so the Phase 1 confirmed-range assertion stays satisfied under
+	// both head policies (D-01).
+	eligible, _, err := client.EligibleHead(ctx, cfg)
+	if err != nil {
+		slog.Error("eligible head", "err", err)
+		os.Exit(1)
+	}
+	probeAt := eligible
+	if cfg.StartBlock != 0 && cfg.StartBlock < eligible {
+		probeAt = cfg.StartBlock
+	}
+	if err := client.Probe(ctx, cfg, probeAt, probeAt); err != nil {
 		slog.Error("provider probe failed", "err", err)
 		os.Exit(1)
 	}
-	slog.Info("provider probe passed", "from", from, "to", to)
-
-	type tokenLog struct {
-		token config.Token
-		log   types.Log
-	}
-	var fetched []tokenLog
-	blocks := map[uint64]struct{}{}
-	for _, token := range cfg.Tokens {
-		topics := indexer.SupplyTopics(token)
-		if topics == nil {
-			slog.Warn("no supply topics for token; skipping", "token", token.Symbol)
-			continue
-		}
-		logs, err := client.FetchLogs(ctx, token, topics, from, to)
-		if err != nil {
-			slog.Error("fetch", "err", err)
-			os.Exit(1)
-		}
-		slog.Info("fetched logs", "token", token.Symbol, "count", len(logs))
-		for _, lg := range logs {
-			fetched = append(fetched, tokenLog{token, lg})
-			blocks[lg.BlockNumber] = struct{}{}
-		}
-	}
-
-	headers := map[uint64]*types.Header{}
-	for bn := range blocks {
-		h, err := client.Header(ctx, bn)
-		if err != nil {
-			slog.Error("header", "block", bn, "err", err)
-			os.Exit(1)
-		}
-		headers[bn] = h
-	}
-
-	chain := "ethereum"
-	var rows []storage.EventRow
-	for _, tl := range fetched {
-		ev, err := indexer.DecodeSupplyEvent(tl.token, tl.log)
-		if err != nil {
-			slog.Error("decode failed", "tx", tl.log.TxHash.Hex(), "log_index", tl.log.Index, "err", err)
-			os.Exit(1)
-		}
-		if ev == nil {
-			continue
-		}
-		h := headers[tl.log.BlockNumber]
-		if h.Hash() != tl.log.BlockHash {
-			slog.Error("reorg detected: header hash does not match the log's block hash; re-run the range",
-				"block", tl.log.BlockNumber, "header_hash", h.Hash().Hex(), "log_block_hash", tl.log.BlockHash.Hex())
-			os.Exit(1)
-		}
-		rows = append(rows, storage.EventRow{
-			Chain:           chain,
-			Token:           ev.Token,
-			ContractAddress: strings.ToLower(common.HexToAddress(tl.token.Contract).Hex()),
-			BlockNumber:     tl.log.BlockNumber,
-			BlockHash:       tl.log.BlockHash.Hex(), // the hash the provider attests emitted this log
-			BlockTime:       time.Unix(int64(h.Time), 0).UTC(),
-			TxHash:          tl.log.TxHash.Hex(),
-			LogIndex:        uint32(tl.log.Index),
-			EventType:       ev.EventType,
-			FromAddress:     ev.FromAddress,
-			ToAddress:       ev.ToAddress,
-			RawAmount:       ev.Amount,
-		})
-	}
+	slog.Info("provider probe passed", "probed_block", probeAt, "eligible_head", eligible, "head_policy", cfg.HeadPolicy)
 
 	store, err := storage.Open(ctx, config.ClickHouseURL())
 	if err != nil {
@@ -149,31 +89,24 @@ func main() {
 		slog.Error("storage", "err", err)
 		os.Exit(1)
 	}
-	if err := store.InsertEvents(ctx, rows); err != nil {
-		slog.Error("storage", "err", err)
-		os.Exit(1)
+
+	slog.Info("starting continuous sync",
+		"head_policy", cfg.HeadPolicy, "window_blocks", cfg.WindowBlocks,
+		"window_floor", cfg.WindowFloor, "poll_seconds", cfg.PollSeconds,
+		"start_block", cfg.StartBlock)
+	err = indexer.RunSync(ctx, client, store, cfg)
+	if errors.Is(err, context.Canceled) {
+		slog.Info("sync stopped (interrupt)")
+		return
 	}
-	inspected, err := store.Inspect(ctx, from, to, 20)
 	if err != nil {
-		slog.Error("storage", "err", err)
+		var mm *indexer.CheckpointMismatchError
+		if errors.As(err, &mm) {
+			slog.Error("checkpoint hash mismatch: ordinary indexing and reporting halted; verify the chain and run the rewind subcommand (D-03)",
+				"block", mm.Height, "expected_hash", mm.ExpectedHash, "observed_hash", mm.ObservedHash)
+			os.Exit(1)
+		}
+		slog.Error("sync stopped", "err", err)
 		os.Exit(1)
 	}
-
-	fmt.Printf("stored %d supply events for range %d-%d\n", len(rows), from, to)
-	w := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
-	fmt.Fprintln(w, "block\ttime (UTC)\ttoken\tevent\traw_amount\tfrom\tto\ttx_hash\tlog_index")
-	for _, r := range inspected {
-		fmt.Fprintf(w, "%d\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%d\n",
-			r.BlockNumber, r.BlockTime.Format(time.RFC3339), r.Token, r.EventType,
-			r.RawAmount.String(), orDash(r.FromAddress), orDash(r.ToAddress),
-			r.TxHash, r.LogIndex)
-	}
-	w.Flush()
-}
-
-func orDash(s string) string {
-	if s == "" {
-		return "-"
-	}
-	return s
 }

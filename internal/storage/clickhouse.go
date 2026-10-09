@@ -5,6 +5,8 @@ package storage
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"fmt"
 	"math/big"
 	"os"
@@ -131,4 +133,40 @@ func (s *Store) Inspect(ctx context.Context, from, to uint64, limit uint32) ([]E
 		out = append(out, r)
 	}
 	return out, rows.Err()
+}
+
+// WriteCheckpoint records one durable sync checkpoint for chain at
+// (height, blockHash). The sync loop calls it only after the window's
+// InsertEvents returned nil — advance-after-accept (SYNC-03).
+func (s *Store) WriteCheckpoint(ctx context.Context, chain string, height uint64, blockHash string) error {
+	batch, err := s.conn.PrepareBatch(ctx, `INSERT INTO indexer_checkpoint (chain, height, block_hash)`)
+	if err != nil {
+		return fmt.Errorf("clickhouse prepare checkpoint batch: %w", err)
+	}
+	if err := batch.Append(chain, height, blockHash); err != nil {
+		return fmt.Errorf("clickhouse append checkpoint height %d: %w", height, err)
+	}
+	if err := batch.Send(); err != nil {
+		return fmt.Errorf("clickhouse send checkpoint batch: %w", err)
+	}
+	return nil
+}
+
+// ReadCheckpoint returns the newest durable checkpoint for chain. The read
+// is ORDER BY height DESC LIMIT 1 — never FINAL and never an unordered scan:
+// ReplacingMergeTree replacement is eventual, so pre-merge multiple physical
+// rows are normal, and the ordered read returns the max height both pre-merge
+// and post-merge (02-RESEARCH Pattern 2, probe-verified on 26.8.20.9).
+func (s *Store) ReadCheckpoint(ctx context.Context, chain string) (height uint64, blockHash string, found bool, err error) {
+	err = s.conn.QueryRow(ctx,
+		`SELECT height, block_hash FROM indexer_checkpoint WHERE chain = ? ORDER BY height DESC LIMIT 1`,
+		chain,
+	).Scan(&height, &blockHash)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return 0, "", false, nil
+		}
+		return 0, "", false, fmt.Errorf("clickhouse read checkpoint: %w", err)
+	}
+	return height, blockHash, true, nil
 }
