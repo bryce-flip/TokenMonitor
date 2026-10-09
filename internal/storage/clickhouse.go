@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"math/big"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/ClickHouse/clickhouse-go/v2"
@@ -57,7 +58,9 @@ func Open(ctx context.Context, url string) (*Store, error) {
 // during tests.
 var migrationCandidates = []string{"migrations/clickhouse.sql", "../../migrations/clickhouse.sql"}
 
-// EnsureSchema applies migrations/clickhouse.sql (idempotent DDL).
+// EnsureSchema applies migrations/clickhouse.sql (idempotent DDL). The file
+// is split into individual statements: the native protocol rejects
+// multi-statement requests ("Multi-statements are not allowed").
 func (s *Store) EnsureSchema(ctx context.Context) error {
 	var ddl []byte
 	for _, p := range migrationCandidates {
@@ -69,10 +72,34 @@ func (s *Store) EnsureSchema(ctx context.Context) error {
 	if ddl == nil {
 		return fmt.Errorf("clickhouse migration not found in %v", migrationCandidates)
 	}
-	if err := s.conn.Exec(ctx, string(ddl)); err != nil {
-		return fmt.Errorf("clickhouse ensure schema: %w", err)
+	for _, stmt := range splitStatements(string(ddl)) {
+		if err := s.conn.Exec(ctx, stmt); err != nil {
+			return fmt.Errorf("clickhouse ensure schema: %w", err)
+		}
 	}
 	return nil
+}
+
+// splitStatements splits a semicolon-terminated SQL file into statements.
+// Comment lines are dropped before splitting: the file's comments contain
+// both semicolons and apostrophes, which would otherwise cut a comment in
+// half and poison the parser. The migration convention is full-line "--"
+// comments only — no inline trailing comments.
+func splitStatements(ddl string) []string {
+	var code []string
+	for _, line := range strings.Split(ddl, "\n") {
+		if t := strings.TrimSpace(line); t == "" || strings.HasPrefix(t, "--") {
+			continue
+		}
+		code = append(code, line)
+	}
+	var stmts []string
+	for _, stmt := range strings.Split(strings.Join(code, "\n"), ";") {
+		if strings.TrimSpace(stmt) != "" {
+			stmts = append(stmts, stmt)
+		}
+	}
+	return stmts
 }
 
 // InsertEvents batch-inserts rows; an empty slice is a no-op.

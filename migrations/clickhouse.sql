@@ -23,7 +23,7 @@ CREATE TABLE IF NOT EXISTS stablecoin_events
     created_at       DateTime DEFAULT now()
 )
 ENGINE = ReplacingMergeTree(created_at)
-ORDER BY (chain, token, block_number, tx_hash, log_index)
+ORDER BY (chain, token, block_number, tx_hash, log_index);
 
 -- indexer_checkpoint: the durable sync resume point (SYNC-03). The sync loop
 -- writes one row per window advance, only AFTER that window's
@@ -46,4 +46,4 @@ CREATE TABLE IF NOT EXISTS indexer_checkpoint
     updated_at DateTime DEFAULT now()
 )
 ENGINE = ReplacingMergeTree(height)
-ORDER BY (chain)
+ORDER BY (chain);
