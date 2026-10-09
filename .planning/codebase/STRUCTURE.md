@@ -19,7 +19,7 @@ TokenMonitor/
 ├── internal/
 │   ├── config/            # JSON load/validate with defaults, env lookups, URL redaction
 │   ├── indexer/           # supply-event decoder + RunSync continuous loop (+ tests)
-│   ├── rpc/               # ethclient wrapper: Probe/FetchLogs/Header/EligibleHead (+ tests)
+│   ├── rpc/               # ethclient wrapper: Probe/FetchLogs/FetchLogsResilient/Header/EligibleHead/SupportsHeadTag/Close (+ tests)
 │   └── storage/           # ClickHouse native store: events + checkpoint (+ integration tests)
 ├── migrations/
 │   └── clickhouse.sql     # stablecoin_events + indexer_checkpoint DDL (ReplacingMergeTree)
@@ -53,8 +53,8 @@ TokenMonitor/
 
 **Core Logic:**
 - `internal/indexer/decoder.go`: pinned topic0 constants, `SupplyTopics`, `DecodeSupplyEvent`.
-- `internal/indexer/sync.go`: `RunSync` continuous window loop over the `ChainReader`/`EventStore` seams; `CheckpointMismatchError`.
-- `internal/rpc/client.go`: `Probe` (D-02 fail-fast), `FetchLogs`, `Header`, `EligibleHead` (finalized tag / confirmed latest-minus-depth).
+- `internal/indexer/sync.go`: `RunSync` continuous window loop over the `ChainReader`/`EventStore` seams (resilient fetch, loud finalized->confirmed downgrade); `CheckpointMismatchError`.
+- `internal/rpc/client.go`: `Probe` (D-02 fail-fast), `FetchLogs`, `FetchLogsResilient` (D-05 halving + fail-closed floor), `Header`, `EligibleHead` (finalized tag / confirmed latest-minus-depth), `SupportsHeadTag` (A1), `Host`, `Close`; credential-scrubbed error returns (AR-01).
 - `internal/storage/clickhouse.go`: `EnsureSchema` (statement-splitting), `InsertEvents`, `Inspect`, `WriteCheckpoint`, `ReadCheckpoint`.
 
 **Testing:**
