@@ -1,10 +1,10 @@
 ---
 schema_version: 1
-open_count: 1
+open_count: 0
 waived_count: 0
-fixed_count: 0
+fixed_count: 1
 total_count: 1
-last_updated: 2026-10-09T10:22:53.900Z
+last_updated: 2026-10-10T11:32:52.206Z
 ---
 
 # Broken Windows Ledger
@@ -15,7 +15,7 @@ last_updated: 2026-10-09T10:22:53.900Z
 
 | id | phase | kind | file | line | description | status | reason | recorded_at | resolved_at |
 |----|-------|------|------|------|-------------|--------|--------|-------------|-------------|
-| 1 | 02 | unmet-truth | .planning/phases/02-reliable-canonical-indexing/02-VALIDATION.md |  | Backstop truth pending: 15-minute continuous Mainnet run following finalized-head advances (manual operator observation, phase gate) | open |  | 2026-10-09T10:22:53.900Z |  |
+| 1 | 02 | unmet-truth | .planning/phases/02-reliable-canonical-indexing/02-VALIDATION.md |  | Backstop truth pending: 15-minute continuous Mainnet run following finalized-head advances (manual operator observation, phase gate) | fixed |  | 2026-10-09T10:22:53.900Z | 2026-10-10T11:32:52.206Z |
 
 ````json
 [
@@ -26,10 +26,10 @@ last_updated: 2026-10-09T10:22:53.900Z
     "file": ".planning/phases/02-reliable-canonical-indexing/02-VALIDATION.md",
     "line": null,
     "description": "Backstop truth pending: 15-minute continuous Mainnet run following finalized-head advances (manual operator observation, phase gate)",
-    "status": "open",
+    "status": "fixed",
     "reason": "",
     "recorded_at": "2026-10-09T10:22:53.900Z",
-    "resolved_at": null,
+    "resolved_at": "2026-10-10T11:32:52.206Z",
     "milestone": "v1.0"
   }
 ]
