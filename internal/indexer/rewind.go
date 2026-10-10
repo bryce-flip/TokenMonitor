@@ -41,6 +41,11 @@ var (
 type RewindStore interface {
 	ReadCheckpoint(ctx context.Context, chain string) (height uint64, blockHash string, found bool, err error)
 	WriteCheckpoint(ctx context.Context, chain string, height uint64, blockHash string) error
+	// DeleteCheckpointAbove drops checkpoint rows strictly above after. The
+	// re-anchor insert alone is invisible: ReadCheckpoint returns the max
+	// height, so the orphaned chain's rows above the rewind point would keep
+	// winning the read pre-merge and post-merge alike.
+	DeleteCheckpointAbove(ctx context.Context, chain string, after uint64) error
 	DeleteEventsFrom(ctx context.Context, chain string, after uint64) error
 	StoredBlockHashes(ctx context.Context, chain string, from, to uint64) (map[uint64]string, error)
 	RangeTotals(ctx context.Context, chain string, from, to uint64) (count uint64, sum *big.Int, err error)
@@ -88,8 +93,9 @@ type RewindReport struct {
 //  5. collect before-totals over (point, checkpoint]; without Yes return the
 //     plan with ErrRewindUnconfirmed (the CLI prompts — Rewind itself never
 //     asks);
-//  6. delete events strictly above the point and re-anchor the checkpoint at
-//     the point with the provider-canonical hash; collect after-totals.
+//  6. delete events strictly above the point, drop the superseded checkpoint
+//     rows strictly above the point, and re-anchor the checkpoint at the
+//     point with the provider-canonical hash; collect after-totals.
 //
 // cfg is accepted for signature stability with the sync-side seams; the chain
 // key is the package constant.
@@ -205,6 +211,14 @@ func Rewind(ctx context.Context, cr ChainReader, rs RewindStore, cfg *config.Con
 	// never touched (must_have prohibition).
 	if err := rs.DeleteEventsFrom(ctx, Chain, point); err != nil {
 		return nil, fmt.Errorf("rewind: delete events above %d: %w", point, err)
+	}
+	// The checkpoint rows above the point are the orphaned chain's advance
+	// history; ReadCheckpoint returns the max height, so they must go before
+	// the re-anchor is written or the re-anchor loses the read forever
+	// (pre-merge to the ordered read, post-merge to the ReplacingMergeTree
+	// survivor). Same strictly-above rule as the events delete.
+	if err := rs.DeleteCheckpointAbove(ctx, Chain, point); err != nil {
+		return nil, fmt.Errorf("rewind: delete checkpoint above %d: %w", point, err)
 	}
 	if err := rs.WriteCheckpoint(ctx, Chain, point, pointHash); err != nil {
 		return nil, fmt.Errorf("rewind: re-anchor checkpoint at %d: %w", point, err)

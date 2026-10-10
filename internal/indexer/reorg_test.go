@@ -144,12 +144,14 @@ func (c *twoChainRPC) start(t *testing.T) *httptest.Server {
 // fakeRewindStore is an in-memory indexer.RewindStore: checkpoint state comes
 // from the embedded fakeEventStore; the row list is what DeleteEventsFrom /
 // StoredBlockHashes / RangeTotals operate on, so before/after reports behave
-// like the real store. `deletes` records every DeleteEventsFrom bound.
+// like the real store. `deletes` records every DeleteEventsFrom bound;
+// `cpDeletes` records every DeleteCheckpointAbove bound.
 type fakeRewindStore struct {
 	*fakeEventStore
-	mu      sync.Mutex
-	rows    []storage.EventRow
-	deletes []uint64
+	mu        sync.Mutex
+	rows      []storage.EventRow
+	deletes   []uint64
+	cpDeletes []uint64
 }
 
 func (f *fakeRewindStore) InsertEvents(ctx context.Context, rows []storage.EventRow) error {
@@ -173,6 +175,22 @@ func (f *fakeRewindStore) DeleteEventsFrom(_ context.Context, chain string, afte
 	}
 	f.rows = kept
 	f.deletes = append(f.deletes, after)
+	return nil
+}
+
+func (f *fakeRewindStore) DeleteCheckpointAbove(_ context.Context, _ string, after uint64) error {
+	f.mu.Lock()
+	f.cpDeletes = append(f.cpDeletes, after)
+	f.mu.Unlock()
+	// The fake holds one checkpoint row; mirroring the strictly-above rule
+	// drops it whenever it sits above the bound. The re-anchor
+	// WriteCheckpoint immediately follows in Rewind.
+	es := f.fakeEventStore
+	es.mu.Lock()
+	defer es.mu.Unlock()
+	if es.cpFound && es.cpHeight > after {
+		es.cpFound = false
+	}
 	return nil
 }
 
@@ -208,6 +226,12 @@ func (f *fakeRewindStore) deleteBounds() []uint64 {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return append([]uint64(nil), f.deletes...)
+}
+
+func (f *fakeRewindStore) cpDeleteBounds() []uint64 {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]uint64(nil), f.cpDeletes...)
 }
 
 func (f *fakeRewindStore) storedRows() []storage.EventRow {
@@ -330,6 +354,9 @@ func TestRewindWalksToCommonAncestorAndExcludesOrphans(t *testing.T) {
 	if got := fake.deleteBounds(); len(got) != 1 || got[0] != 100 {
 		t.Fatalf("DeleteEventsFrom bounds = %v, want exactly [100] (strictly above the verified point)", got)
 	}
+	if got := fake.cpDeleteBounds(); len(got) != 1 || got[0] != 100 {
+		t.Fatalf("DeleteCheckpointAbove bounds = %v, want exactly [100] (checkpoint rows strictly above the re-anchor point are dropped so the re-anchor wins the read)", got)
+	}
 	if h, hash, _ := fake.state(); h != 100 || hash != reorgHashA(100) {
 		t.Fatalf("checkpoint after rewind = (%d, %s), want re-anchored (100, %s)", h, hash, reorgHashA(100))
 	}
@@ -379,6 +406,9 @@ func TestRewindToOverrideRejectedOnDisagreement(t *testing.T) {
 	}
 	if got := fake.deleteBounds(); len(got) != 0 {
 		t.Fatalf("DeleteEventsFrom bounds after rejected override = %v, want none", got)
+	}
+	if got := fake.cpDeleteBounds(); len(got) != 0 {
+		t.Fatalf("DeleteCheckpointAbove bounds after rejected override = %v, want none", got)
 	}
 	if h, hash, _ := fake.state(); h != 103 || hash != reorgHashA(103) {
 		t.Fatalf("checkpoint moved after rejected override: (%d, %s), want (103, %s)", h, hash, reorgHashA(103))

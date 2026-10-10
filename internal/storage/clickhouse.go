@@ -196,6 +196,26 @@ func (s *Store) DeleteEventsFrom(ctx context.Context, chain string, after uint64
 	return nil
 }
 
+// DeleteCheckpointAbove excludes all of chain's checkpoint rows strictly
+// above after via a lightweight DELETE — the same visibility contract
+// DeleteEventsFrom relies on: immediately visible to reads, no mutation
+// wait. The rewind calls it before the re-anchor insert: indexer_checkpoint
+// is ReplacingMergeTree(height) read with ORDER BY height DESC LIMIT 1, so a
+// re-anchor written at a LOWER height alone would lose to the orphaned
+// chain's surviving rows forever — pre-merge to the ordered read over
+// physical rows, post-merge to the max-height survivor (the schema's own
+// documented design). Rows at or below after are never touched, mirroring
+// the events-delete rule; the rewind subcommand is the only caller.
+func (s *Store) DeleteCheckpointAbove(ctx context.Context, chain string, after uint64) error {
+	if err := s.conn.Exec(ctx,
+		`DELETE FROM indexer_checkpoint WHERE chain = ? AND height > ?`,
+		chain, after,
+	); err != nil {
+		return fmt.Errorf("clickhouse delete checkpoint above %d: %w", after, err)
+	}
+	return nil
+}
+
 // StoredBlockHashes returns one block_hash per event-bearing height of chain
 // in [from, to] — the stored side of the rewind ancestor walk. FINAL is
 // mandatory (correctness read); any() suffices per height because every log
