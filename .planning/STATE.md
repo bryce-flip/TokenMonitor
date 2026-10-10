@@ -3,17 +3,17 @@ gsd_state_version: "1.0"
 milestone: v1.0
 current_phase: 2
 current_phase_name: Reliable Canonical Indexing
-status: executing
-stopped_at: Completed 02-02-PLAN.md
-last_updated: "2026-10-09T11:03:00.427Z"
+status: verifying
+stopped_at: Completed 02-03-PLAN.md
+last_updated: "2026-10-10T08:22:00.337Z"
 last_activity: 2026-10-09
 last_activity_desc: Phase 2 execution started
-state_head: 698b332ea64936cf2018ad5e7d1afb3125c8e23a
+state_head: 3d17be250ef599d779e7273ef55b7c0f5c9b554e
 progress:
   total_phases: 4
   completed_phases: 1
   total_plans: 5
-  completed_plans: 4
+  completed_plans: 5
 ---
 
 # Project State
@@ -29,7 +29,7 @@ See: .planning/PROJECT.md (updated 2026-10-08)
 
 Phase: 2 (Reliable Canonical Indexing) — EXECUTING
 Plan: 3 of 3
-Status: Ready to execute
+Status: Phase complete — ready for verification
 Last activity: 2026-10-09 — Phase 2 execution started
 
 Progress: [███░░░░░░░] 25%
@@ -59,6 +59,7 @@ Progress: [███░░░░░░░] 25%
 | Phase 01 P02 | 26min | 2 tasks | 4 files |
 | Phase 02 P01 | 38min | 2 tasks | 11 files |
 | Phase 02 P02 | 33min | 3 tasks | 4 files |
+| Phase 02 P03 | 132min | 3 tasks | 11 files |
 
 ## Accumulated Context
 
@@ -75,6 +76,12 @@ Decisions are logged in PROJECT.md. Phase 1 proves real RPC logs through token-s
 - [Phase 02]: 02-01: RunSync depends on ChainReader/EventStore structural seams (rpc imports indexer for SupplyTopics; reverse import would cycle); proof suite pins the seams in external package indexer_test
 - [Phase 02]: 02-01: checkpoint reads are ORDER BY height DESC LIMIT 1, never FINAL; ReplacingMergeTree(height) keeps the merged survivor at max height under out-of-order writes
 - [Phase 02]: 02-01: EnsureSchema applies migrations statement-by-statement (native protocol rejects multi-statement; comment lines carry semicolons and apostrophes)
+- [Phase 02]: 02-03: ancestor walk terminates a row-less height only when no stored rows remain AT OR BELOW it — the naive reading re-anchors above undetected orphans (caught by TestRewindSameIdentityReinsertPath)
+- [Phase 02]: 02-03: Rewind Yes=false is a pure dry run (plan + ErrRewindUnconfirmed); the confirmation prompt lives in the CLI; destructive steps run strictly above the verified rewind point only
+- [Phase 02]: 02-03: DeleteEventsFrom is exactly the lightweight `DELETE FROM stablecoin_events WHERE chain = ? AND block_number > ?` — immediately FINAL-visible, merge-safe, re-insert-safe (pinned by tests on 26.8.20.9)
+- [Phase 02]: 02-03: devnet suite isolates per run in a fresh ClickHouse database (tm_devnet_<unixnano>) — RunSync's chain key is a constant, so the database is the only namespace boundary
+- [Phase 02]: 02-03: lifecycle devnet test syncs at confirmed-64 (documented deviation): the enclave's beacon finality covers a tip block in ~20 min (measured twice), which cannot fit the pinned 20m suite budget; finalized-head following is proven by the restart test (finalized, PASS)
+- [Phase 02]: 02-03: the 02-RESEARCH prefunded-key constant was one hex nibble short; the single-nibble repair deriving exactly the funded address was found cryptographically and documented at the constant
 
 ### Pending Todos
 
@@ -93,6 +100,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-10-09T11:03:00.370Z
-Stopped at: Completed 02-02-PLAN.md
+Last session: 2026-10-10T08:21:10.060Z
+Stopped at: Completed 02-03-PLAN.md
 Resume file: None
