@@ -108,6 +108,10 @@ type cannonRPC struct {
 	// rejectFinalizedTag answers eth_getBlockByNumber "finalized" with an
 	// error — a provider without finalized-tag support (A1 downgrade proof).
 	rejectFinalizedTag bool
+	// finalizedTagTransientErr answers the finalized-tag probe with a
+	// transient server error (-32000, not not-supported vocabulary) — the
+	// WR-02 proof that a failed probe fails the run instead of downgrading.
+	finalizedTagTransientErr bool
 
 	getLogsCalls atomic.Int32
 
@@ -148,6 +152,10 @@ func (c *cannonRPC) start(t *testing.T) *httptest.Server {
 			}
 			if tag == "finalized" && c.rejectFinalizedTag {
 				resp["error"] = map[string]any{"code": -32601, "message": "the finalized tag is not supported"}
+				break
+			}
+			if tag == "finalized" && c.finalizedTagTransientErr {
+				resp["error"] = map[string]any{"code": -32000, "message": "internal server error"}
 				break
 			}
 			n := c.head
@@ -775,5 +783,45 @@ func TestRunSyncDowngradesToConfirmedLoudlyWhenTagUnsupported(t *testing.T) {
 	}
 	if h, hash, _ := fake.state(); h != 2080 || hash != cannonHash(2080, nil) {
 		t.Fatalf("checkpoint = (%d, %s), want confirmed-semantics seed (2080, %s)", h, hash, cannonHash(2080, nil))
+	}
+}
+
+// TestRunSyncFailsLoudlyWhenTagProbeFails proves WR-02: a TRANSIENT failure
+// of the finalized-tag probe (server error, transport blip) fails the run —
+// head_policy stays finalized, nothing is ingested, and the downgrade log is
+// never emitted. Only a genuine not-supported rejection downgrades (the test
+// above); "request failed" is never "capability missing".
+func TestRunSyncFailsLoudlyWhenTagProbeFails(t *testing.T) {
+	var buf bytes.Buffer // slog.TextHandler serializes concurrent record writes
+	orig := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
+	t.Cleanup(func() { slog.SetDefault(orig) })
+
+	srv := (&cannonRPC{head: 2100, finalizedTagTransientErr: true}).start(t)
+	client, err := rpc.New(context.Background(), srv.URL)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	fake := &fakeEventStore{}
+	cfg := syncConfig() // head_policy finalized
+
+	err = indexer.RunSync(context.Background(), client, fake, cfg)
+	if err == nil {
+		t.Fatal("RunSync must fail when the finalized-tag probe fails transiently, not downgrade")
+	}
+	if !strings.Contains(err.Error(), "finalized-tag support probe") {
+		t.Fatalf("error %q does not name the failed finalized-tag probe", err.Error())
+	}
+	if cfg.HeadPolicy != "finalized" {
+		t.Fatalf("head_policy downgraded to %q on a failed probe; want finalized untouched", cfg.HeadPolicy)
+	}
+	if strings.Contains(strings.ToLower(buf.String()), "downgrad") {
+		t.Fatalf("downgrade logged for a merely failed probe:\n%s", buf.String())
+	}
+	if calls := fake.insertCalls(); len(calls) != 0 {
+		t.Fatalf("ingest calls after failed probe = %d, want 0", len(calls))
+	}
+	if h, _, found := fake.state(); found {
+		t.Fatalf("checkpoint seeded during a failed probe: height %d", h)
 	}
 }

@@ -31,8 +31,10 @@ type ChainReader interface {
 	FetchLogsResilient(ctx context.Context, token config.Token, topics []common.Hash, from, to, window, floor uint64) ([]types.Log, error)
 	// SupportsHeadTag reports whether the provider serves the consensus
 	// "finalized" block tag (02-RESEARCH A1); Host names the provider
-	// credential-free for the loud downgrade log below.
-	SupportsHeadTag(ctx context.Context) bool
+	// credential-free for the loud downgrade log below. A probe FAILURE is
+	// returned as the error — the loop fails the run instead of downgrading
+	// head policy on a transient error (WR-02).
+	SupportsHeadTag(ctx context.Context) (bool, error)
 	Host() string
 }
 
@@ -71,11 +73,20 @@ func (e *CheckpointMismatchError) Error() string {
 func RunSync(ctx context.Context, cr ChainReader, es EventStore, cfg *config.Config) error {
 	// A1 (02-RESEARCH): finalized-tag support is provider-dependent, and a
 	// provider without it must never be silently treated as finalized-safe —
-	// downgrade loudly to confirmed for the rest of the run.
-	if cfg.HeadPolicy == "finalized" && !cr.SupportsHeadTag(ctx) {
-		slog.Error("RPC provider does not serve the finalized block tag; downgrading head_policy from finalized to confirmed for this run (set head_policy \"confirmed\" explicitly to make this intentional)",
-			"provider", cr.Host(), "missing_capability", "finalized block tag", "downgrade", "finalized->confirmed")
-		cfg.HeadPolicy = "confirmed"
+	// downgrade loudly to confirmed for the rest of the run. A FAILED probe
+	// (transport, 5xx, exhausted throttle) never downgrades: it fails the run
+	// (WR-02) — conflating "capability missing" with "request failed" would
+	// silently weaken the reorg margin on a startup blip.
+	if cfg.HeadPolicy == "finalized" {
+		tagSupported, err := cr.SupportsHeadTag(ctx)
+		if err != nil {
+			return fmt.Errorf("finalized-tag support probe: %w", err)
+		}
+		if !tagSupported {
+			slog.Error("RPC provider does not serve the finalized block tag; downgrading head_policy from finalized to confirmed for this run (set head_policy \"confirmed\" explicitly to make this intentional)",
+				"provider", cr.Host(), "missing_capability", "finalized block tag", "downgrade", "finalized->confirmed")
+			cfg.HeadPolicy = "confirmed"
+		}
 	}
 	for {
 		if err := ctx.Err(); err != nil {

@@ -556,7 +556,7 @@ func TestWrappedErrorsRedactCredentials(t *testing.T) {
 	assertRedacted(t, err, credURL, userinfo)
 	_, err = c.Header(context.Background(), 100)
 	assertRedacted(t, err, credURL, userinfo)
-	var _ = c.SupportsHeadTag(context.Background()) // false path must not leak either
+	_, _ = c.SupportsHeadTag(context.Background()) // error path must not leak either (WR-02)
 	// The scrub itself is deterministic on both leak shapes: the raw URL and
 	// net/http's masked "user:xxxxx@" form.
 	for _, leak := range []string{
@@ -584,7 +584,10 @@ func TestWrappedErrorsRedactCredentials(t *testing.T) {
 
 // TestSupportsHeadTagTrueAndFalse proves the A1 probe: a provider answering
 // eth_getBlockByNumber for the "finalized" tag (params carry the tag string)
-// reports true; one erroring the method reports false without failing.
+// reports (true, nil); one rejecting the method with a not-supported error
+// reports (false, nil) — the only answer callers may downgrade on. A
+// transport failure reports the ERROR instead (WR-02): a failed probe must
+// never be read as "unsupported".
 func TestSupportsHeadTagTrueAndFalse(t *testing.T) {
 	canned := &cannedRPC{chainID: "0x1", head: "0x3e8"}
 	srv := canned.start(t)
@@ -592,8 +595,9 @@ func TestSupportsHeadTagTrueAndFalse(t *testing.T) {
 	if err != nil {
 		t.Fatalf("dial: %v", err)
 	}
-	if !c.SupportsHeadTag(context.Background()) {
-		t.Fatal("provider serving eth_getBlockByNumber must report tag support")
+	supported, err := c.SupportsHeadTag(context.Background())
+	if err != nil || !supported {
+		t.Fatalf("provider serving eth_getBlockByNumber: (%v, %v), want (true, nil)", supported, err)
 	}
 	tags := canned.blockTags()
 	if len(tags) == 0 || tags[len(tags)-1] != "finalized" {
@@ -606,8 +610,22 @@ func TestSupportsHeadTagTrueAndFalse(t *testing.T) {
 	if err != nil {
 		t.Fatalf("dial: %v", err)
 	}
-	if c2.SupportsHeadTag(context.Background()) {
-		t.Fatal("provider erroring eth_getBlockByNumber must report no tag support")
+	supported, err = c2.SupportsHeadTag(context.Background())
+	if err != nil || supported {
+		t.Fatalf("provider rejecting the method with -32601: (%v, %v), want (false, nil) — a legitimate capability gap", supported, err)
+	}
+
+	// A transport failure is NOT a capability gap: the probe surfaces the
+	// error so callers fail loudly instead of downgrading head policy.
+	canned3 := &cannedRPC{chainID: "0x1", head: "0x3e8"}
+	srv3 := canned3.start(t)
+	c3, err := New(context.Background(), srv3.URL)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	srv3.Close()
+	if _, err := c3.SupportsHeadTag(context.Background()); err == nil {
+		t.Fatal("a failed probe must return its error, never read as unsupported")
 	}
 }
 

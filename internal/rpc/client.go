@@ -154,11 +154,36 @@ func (c *Client) Close() {
 
 // SupportsHeadTag reports whether the provider serves the consensus
 // "finalized" block tag (02-RESEARCH A1: the capability is provider-dependent
-// and was impossible to probe live during research). Any error reads as
-// unsupported; callers downgrade loudly to confirmed, never silently.
-func (c *Client) SupportsHeadTag(ctx context.Context) bool {
+// and was impossible to probe live during research). Only a genuine
+// method-not-found / not-supported rejection reports (false, nil) — callers
+// downgrade loudly to confirmed on that answer, never silently. Any other
+// failure (transport error, 5xx, exhausted throttle backoff) is RETURNED as
+// the error: a failed probe must never be read as "unsupported", which
+// would weaken head policy for the whole run on a transient blip (WR-02).
+func (c *Client) SupportsHeadTag(ctx context.Context) (bool, error) {
 	_, err := c.headerByNumber(ctx, big.NewInt(int64(ethrpc.FinalizedBlockNumber)), "tag finalized")
-	return err == nil
+	if err == nil {
+		return true, nil
+	}
+	if isTagUnsupportedErr(err) {
+		return false, nil
+	}
+	return false, err
+}
+
+// isTagUnsupportedErr classifies a tag-probe error as the provider genuinely
+// not serving the method/tag, via the JSON-RPC not-supported vocabulary
+// (-32601 "Method not found", "the finalized tag is not supported", "... is
+// not available"). Transport and server failures ("connection refused",
+// 5xx, throttle texts) never match: those mean the probe FAILED, not that
+// the capability is absent.
+func isTagUnsupportedErr(err error) bool {
+	s := strings.ToLower(err.Error())
+	return strings.Contains(s, "method not found") ||
+		strings.Contains(s, "not supported") ||
+		strings.Contains(s, "unsupported") ||
+		strings.Contains(s, "does not exist") ||
+		strings.Contains(s, "not available")
 }
 
 // New dials the Ethereum JSON-RPC endpoint at rawURL.
