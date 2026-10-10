@@ -477,6 +477,41 @@ func TestRateLimitExceededMessageIsThrottle(t *testing.T) {
 	}
 }
 
+// TestRateLimitErrMatchesStatusTokenNotDigitRuns pins the WR-01
+// classification boundary: the throttle detector matches the 429 status as a
+// standalone numeric token plus the live-observed throttle phrases, but
+// never a "429" digit run inside a block number (headerByNumber embeds
+// "block %d") or a hash fragment quoted by the provider — those are
+// permanent errors that must fail immediately, not burn the bounded backoff.
+func TestRateLimitErrMatchesStatusTokenNotDigitRuns(t *testing.T) {
+	throttles := []string{
+		"429 Too Many Requests",
+		"HTTP 429",
+		"the provider returned 429 for eth_getLogs",
+		"status=429",
+		"-32005 Too Many Requests",
+		"Rate limit exceeded",
+		"the provider is temporarily unavailable",
+	}
+	for _, s := range throttles {
+		if !isRateLimitErr(errors.New(s)) {
+			t.Errorf("throttle-shaped error %q must classify as a rate limit", s)
+		}
+	}
+	permanents := []string{
+		"eth_getBlockByNumber host block 4290: header not found",
+		"eth_getBlockByNumber host block 1429001: header not found",
+		"eth_getLogs host blocks 100-980: log 0x429abcdef0123456789abcdef0123456789abcdef0123456789abcdef01234567 not found",
+		"tx 0xabc429def receipt not available yet",
+		"archive requests require a personal token",
+	}
+	for _, s := range permanents {
+		if isRateLimitErr(errors.New(s)) {
+			t.Errorf("permanent error %q must not classify as a rate limit (a block number or hash fragment is not a 429 status)", s)
+		}
+	}
+}
+
 // assertRedacted fails when err's text carries the endpoint's credentials:
 // it must name the host (URL text survived, redacted) while carrying neither
 // the userinfo pair nor the full credentialed URL.

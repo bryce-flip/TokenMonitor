@@ -46,18 +46,29 @@ func isResultCapErr(err error) bool {
 		strings.Contains(s, "query timeout exceeded")
 }
 
+// httpStatus429 matches the HTTP 429 status as a standalone numeric token —
+// "429 Too Many Requests", "HTTP 429", "(429)", "status=429" — but never a
+// "429" digit run embedded in a longer alphanumeric token: both token edges
+// must be non-alphanumeric (or the string's ends). Header errors embed the
+// block number ("block 4290") and provider errors quote hash fragments
+// ("0x429ab..."); neither may route into retry backoff (WR-01).
+var httpStatus429 = regexp.MustCompile(`(?:^|[^0-9A-Za-z])429(?:[^0-9A-Za-z]|$)`)
+
 // isRateLimitErr reports a provider throttle response. The bare -32005
 // disjunct is gone (02-02): that code is shared with the result cap above,
 // and a cap misrouted here would burn the bounded backoff on a query that
 // can only be fixed by shrinking the range. Live-observed throttle shapes:
 // 429 / -32005 "Too Many Requests" (Phase 1), -32005 "Rate limit exceeded"
-// (eth.merkle.io, 02-RESEARCH).
+// (eth.merkle.io, 02-RESEARCH). The 429 status is matched as a standalone
+// token (httpStatus429), never as a bare substring: a permanent error whose
+// text merely contains "429" — a block number, a hash fragment — would
+// otherwise burn the full bounded backoff (30s) before failing.
 func isRateLimitErr(err error) bool {
 	if err == nil {
 		return false
 	}
 	s := err.Error()
-	return strings.Contains(s, "429") ||
+	return httpStatus429.MatchString(s) ||
 		strings.Contains(s, "Too Many Requests") ||
 		strings.Contains(s, "Rate limit exceeded") ||
 		strings.Contains(s, "temporarily unavailable")
