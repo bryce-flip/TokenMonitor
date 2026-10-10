@@ -92,8 +92,8 @@ Behavior:
   matches the checkpointed hash (a displaced finalized block — a
   catastrophic consensus or hostile-provider event), the indexer halts
   ordinary indexing with a loud diagnostic naming the block and both hashes
-  and exits non-zero. Recovery is a manual, verified rewind (a `rewind`
-  subcommand lands in a later phase); the indexer never auto-heals this.
+  and exits non-zero. Recovery is the manual, verified rewind procedure in
+  the next section; the indexer never auto-heals this.
 - The fail-fast provider probe (chain id 1, confirmed-range boundary,
   historical `eth_getLogs` sample) still runs before any ingest.
 - Free-tier providers rate-limit bursty requests; the indexer automatically
@@ -107,7 +107,53 @@ Behavior:
   may still need a smaller `window_blocks` until automatic window halving
   lands.
 
-## 5. Inspection
+## 5. Reorg safety — mismatch halt and the rewind procedure
+
+The checkpoint stores `(block_number, block_hash)`. On every resume and
+before every window ingest, the indexer re-fetches the provider's canonical
+header at the checkpointed height and compares hashes. On a mismatch the
+indexer stops ordinary indexing and reporting immediately — before any new
+ingest — and exits non-zero with a diagnostic naming the block height, the
+expected (checkpointed) hash, and the observed (canonical) hash. Nothing is
+ever deleted or re-anchored automatically: a reorg deep enough to displace a
+checkpointed finalized block is a catastrophic consensus or hostile-provider
+event, and auto-healing would silently mask it (decision D-03).
+
+Recovery is the operator-gated, verified rewind:
+
+1. **Stop and verify the chain.** Confirm with an independent provider or
+   explorer which chain is canonical at the mismatched height. The rewind
+   below trusts the configured provider's headers; that trust is exactly
+   what the operator must confirm first.
+2. **Compute the plan** (this is what the subcommand does before touching
+   anything): walk down from the checkpointed height while the stored
+   per-block hashes disagree with the provider's canonical headers. The
+   rewind point is the first height where they agree — or the first height
+   with no stored rows. The walk is bounded at 1,000 blocks; deeper
+   displacement aborts with a named error for operator investigation.
+3. **Run the rewind and confirm:**
+
+   ```sh
+   go run ./cmd/indexer rewind          # prints the plan, then asks to confirm
+   go run ./cmd/indexer rewind --yes    # scripted: skip the prompt
+   go run ./cmd/indexer rewind --to N   # override the walked point (verified
+                                       # against stored rows first; rejected
+                                       # on any disagreement)
+   ```
+
+   The subcommand prints the expected/observed hashes, the verified rewind
+   point, the delete range (`block_number > point` — rows at or below the
+   point are never touched), and the FINAL event count and sum over the
+   affected range **before and after** the delete. Anything but an explicit
+   `yes` at the prompt aborts with nothing deleted. Any verification failure
+   exits non-zero with nothing deleted.
+4. **Restart the indexer** (`run`). It resumes from the re-anchored
+   checkpoint and re-ingests the rewound range from the canonical chain;
+   replayed events collapse to one row per event (ReplacingMergeTree + FINAL
+   reads), including the reorg case where a re-included transaction lands
+   with the same identity but a new block hash and amount.
+
+## 6. Inspection
 
 ```sh
 docker exec -it tm-clickhouse clickhouse-client --query "
@@ -139,7 +185,8 @@ go test ./...
 Environment-gated suites:
 
 ```sh
-# ClickHouse exactness: UInt256 round trip incl. 2^256-1, replay idempotence
+# ClickHouse exactness: UInt256 round trip incl. 2^256-1, replay idempotence,
+# checkpoint ordering, rewind delete/re-insert/OPTIMIZE proofs
 CLICKHOUSE_URL=clickhouse://default@127.0.0.1:9000/default \
   go test ./internal/storage -v -count=1
 
@@ -149,3 +196,59 @@ CLICKHOUSE_URL=clickhouse://default@127.0.0.1:9000/default \
 ETH_RPC_URL=<your-mainnet-http-endpoint> \
   go test ./internal/indexer -run TestLive -v -count=1
 ```
+
+## 7. Localnet (Kurtosis devnet)
+
+Restart/resume/replay behavior and a real deployed TetherToken are proven
+against a Kurtosis local Ethereum testnet (decision D-02). The deterministic
+reorg path (mismatch halt, ancestor walk, orphan exclusion) is covered
+offline by the two-chain httptest harness in `internal/indexer/reorg_test.go`
+— ethereum-package has no reorg knob, so the localnet covers real
+consensus-driven finality, restart, and replay behavior only. **The localnet
+is never a substitute for Mainnet classification proof: Mainnet pinned
+fixtures remain the classification anchor.**
+
+Inspect or (re)provision the enclave:
+
+```sh
+kurtosis enclave inspect eth-devnet    # note the el-1-geth-lighthouse rpc port
+# if the enclave is gone:
+kurtosis run github.com/ethpandaops/ethereum-package --enclave eth-devnet
+```
+
+Run the env-gated devnet suite (opt-in, exactly like the other gates; skips
+with a pointer to the commands above when unset). Budget ~10 minutes: the
+restart test catches up to the real finalized head twice, and the lifecycle
+test deploys the token and syncs it once the chain has 64 blocks (2 epochs)
+of confirmation depth on top — the enclave's beacon-finality signal itself
+takes ~20 minutes to cover a tip block (batched epoch jumps), which does not
+fit a single bounded test run; the finalized-head behavior is what the
+restart test proves:
+
+```sh
+DEVNET_RPC_URL=http://127.0.0.1:<rpc-port> \
+CLICKHOUSE_URL=clickhouse://default@127.0.0.1:9000/default \
+  go test ./internal/indexer -run TestDevnet -v -count=1 -timeout 20m
+```
+
+The suite deploys the token from `testdata/usdt_creation.hex` using the
+public ethereum-package prefunded test key (published fixture material, not a
+secret) and drives `issue`/`redeem` through the real sync loop.
+
+## 8. Test fixtures
+
+`testdata/usdt_creation.hex` is the verbatim creation input (constructor
+bytecode + arguments, 11,900 bytes / 23,800 hex characters, no `0x` prefix)
+of the Mainnet TetherToken (USDT) deployment:
+
+- transaction `0x2f1c5c2b44f771e942a8506148e256f94f1a464babc938ae0690c6e34cd79190`
+- block 4,634,748 (`0x46b87c`), deployer `0x36928500bc1dcd7af6a2b4008875cc336b927d57`
+- extracted 2026-10-09 via archive RPC (`eth_getTransactionByHash` against
+  eth.drpc.org, fallback rpc.flashbots.net — public archive endpoints; the
+  recipe is in `.planning/phases/02-reliable-canonical-indexing/02-RESEARCH.md`
+  A3)
+
+Deploying this input verbatim on any chain recreates the original contract
+with identical event semantics — topic0 hashes are keccak of the canonical
+signatures and are chain-independent — so the localnet lifecycle test
+exercises the production decoder without a compiler or a Mainnet fork.
