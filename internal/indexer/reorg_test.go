@@ -148,10 +148,12 @@ func (c *twoChainRPC) start(t *testing.T) *httptest.Server {
 // `cpDeletes` records every DeleteCheckpointAbove bound.
 type fakeRewindStore struct {
 	*fakeEventStore
-	mu        sync.Mutex
-	rows      []storage.EventRow
-	deletes   []uint64
-	cpDeletes []uint64
+	mu                 sync.Mutex
+	rows               []storage.EventRow
+	deletes            []uint64
+	cpDeletes          []uint64
+	failNthRangeTotals int // 0 = off; fail the Nth RangeTotals call (WR-03 proof)
+	rangeTotalsCalls   int
 }
 
 func (f *fakeRewindStore) InsertEvents(ctx context.Context, rows []storage.EventRow) error {
@@ -211,6 +213,10 @@ func (f *fakeRewindStore) StoredBlockHashes(_ context.Context, chain string, fro
 func (f *fakeRewindStore) RangeTotals(_ context.Context, chain string, from, to uint64) (uint64, *big.Int, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.rangeTotalsCalls++
+	if f.failNthRangeTotals != 0 && f.rangeTotalsCalls == f.failNthRangeTotals {
+		return 0, nil, errors.New("injected range-totals failure")
+	}
 	n := uint64(0)
 	sum := new(big.Int)
 	for _, r := range f.rows {
@@ -415,6 +421,62 @@ func TestRewindToOverrideRejectedOnDisagreement(t *testing.T) {
 	}
 	if rows := fake.storedRows(); len(rows) != 4 {
 		t.Fatalf("stored rows after rejected override = %d, want all 4 intact", len(rows))
+	}
+}
+
+// TestRewindReturnsPartialReportWhenAfterTotalsFails proves WR-03: when the
+// after-totals measurement fails AFTER the destructive steps already ran,
+// Rewind still returns the report — rewind point, delete range, before
+// totals — with AfterTotalsUnavailable set, alongside the error naming what
+// completed; the delete and the re-anchor are visible in the store state,
+// not rolled back and not hidden.
+func TestRewindReturnsPartialReportWhenAfterTotalsFails(t *testing.T) {
+	const forkAt = 101
+	reorg := &twoChainRPC{head: 150, forkAt: forkAt}
+	srv := reorg.start(t)
+	client, err := rpc.New(context.Background(), srv.URL)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	fake := &fakeRewindStore{fakeEventStore: &fakeEventStore{cpFound: true, cpHeight: 103, cpHash: reorgHashA(103)}}
+	fake.rows = []storage.EventRow{
+		reorgRow(100, 0, 1000, reorgHashA(100), "0x"+strings.Repeat("a", 63)+"0"),
+		reorgRow(101, 1, 10, reorgHashA(101), "0x"+strings.Repeat("a", 63)+"1"),
+		reorgRow(102, 2, 20, reorgHashA(102), "0x"+strings.Repeat("a", 63)+"2"),
+		reorgRow(103, 3, 30, reorgHashA(103), "0x"+strings.Repeat("a", 63)+"3"),
+	}
+	fake.failNthRangeTotals = 2 // 1st call = before-totals (succeeds); 2nd = after-totals (fails)
+	reorg.onB.Store(true)
+
+	report, err := indexer.Rewind(context.Background(), client, fake, syncConfig(), indexer.RewindOpts{Yes: true})
+	if err == nil {
+		t.Fatal("the after-totals failure must still surface as the returned error")
+	}
+	if msg := err.Error(); !strings.Contains(msg, "after-totals failed") || !strings.Contains(msg, "completed at 100") {
+		t.Fatalf("error %q does not state that the destructive steps completed at 100 and only the measurement failed", msg)
+	}
+	if report == nil {
+		t.Fatal("the partial report must survive the after-totals failure")
+	}
+	if report.RewindPoint != 100 || report.DeletedRange != "block_number > 100" {
+		t.Fatalf("partial report = (point %d, range %q), want (100, block_number > 100)", report.RewindPoint, report.DeletedRange)
+	}
+	if report.Before.Count != 3 || report.Before.Sum.Int64() != 60 {
+		t.Fatalf("partial report before totals = (%d, %s), want (3, 60)", report.Before.Count, report.Before.Sum.String())
+	}
+	if !report.AfterTotalsUnavailable || report.After.Sum != nil {
+		t.Fatalf("partial report after side = (unavailable=%v, sum=%v), want (true, nil)", report.AfterTotalsUnavailable, report.After.Sum)
+	}
+	// The destructive steps really ran and are observable: delete strictly
+	// above 100, checkpoint re-anchored at the common ancestor.
+	if got := fake.deleteBounds(); len(got) != 1 || got[0] != 100 {
+		t.Fatalf("DeleteEventsFrom bounds = %v, want [100]", got)
+	}
+	if h, hash, _ := fake.state(); h != 100 || hash != reorgHashA(100) {
+		t.Fatalf("checkpoint after partial rewind = (%d, %s), want re-anchored (100, %s)", h, hash, reorgHashA(100))
+	}
+	if rows := fake.storedRows(); len(rows) != 1 || rows[0].BlockNumber != 100 {
+		t.Fatalf("stored rows after partial rewind = %+v, want only the block-100 row", rows)
 	}
 }
 

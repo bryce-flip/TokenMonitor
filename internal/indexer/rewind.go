@@ -76,7 +76,12 @@ type RewindReport struct {
 	RewindHash       string // the provider-canonical hash re-anchored at the point
 	Before           RangeTotalsResult
 	After            RangeTotalsResult // Sum == nil until the destructive steps ran
-	DeletedRange     string
+	// AfterTotalsUnavailable marks a report whose delete and re-anchor DID
+	// run but whose after-totals measurement failed: the report is partial
+	// on purpose so the operator still sees exactly what was destroyed
+	// (WR-03) — the accompanying error names the failed measurement.
+	AfterTotalsUnavailable bool
+	DeletedRange           string
 }
 
 // Rewind performs the verified rewind (D-03, SYNC-05):
@@ -227,7 +232,11 @@ func Rewind(ctx context.Context, cr ChainReader, rs RewindStore, cfg *config.Con
 	// (Phase 2 has no derived tables — events-only rewind is complete here).
 	afterN, afterSum, err := rs.RangeTotals(ctx, Chain, point+1, cpHeight)
 	if err != nil {
-		return nil, fmt.Errorf("rewind: after totals %d-%d: %w", point+1, cpHeight, err)
+		// The destructive steps already ran — never swallow the report: the
+		// operator must see the rewind point, the delete range, and the
+		// before-totals even when the closing measurement fails (WR-03).
+		report.AfterTotalsUnavailable = true
+		return report, fmt.Errorf("rewind: delete and re-anchor completed at %d, but after-totals failed: %w", point, err)
 	}
 	if afterSum == nil {
 		afterSum = new(big.Int)

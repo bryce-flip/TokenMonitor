@@ -200,6 +200,13 @@ func rewindCommand(configPath string, args []string) {
 		report, err = indexer.Rewind(ctx, client, store, cfg, opts)
 	}
 	if err != nil {
+		// A non-nil report means the destructive steps already ran (WR-03):
+		// print what happened before exiting on the error — the operator
+		// must see the rewind point, the delete range, and the before-totals
+		// even when the closing measurement failed.
+		if report != nil {
+			printRewindReport(os.Stdout, report)
+		}
 		slog.Error("rewind failed", "err", err)
 		os.Exit(1)
 	}
@@ -210,7 +217,9 @@ func rewindCommand(configPath string, args []string) {
 
 // printRewindReport renders the rewind plan/result in the Phase 1 tabwriter
 // style. After.Sum is nil until the destructive steps have run, so a
-// not-yet-confirmed plan simply shows the before side.
+// not-yet-confirmed plan simply shows the before side; a report whose
+// after-totals measurement failed shows the unavailable marker instead
+// (WR-03) — the delete and re-anchor still ran.
 func printRewindReport(w io.Writer, r *indexer.RewindReport) {
 	tw := tabwriter.NewWriter(w, 0, 4, 2, ' ', 0)
 	fmt.Fprintln(tw, "field\tvalue")
@@ -222,7 +231,10 @@ func printRewindReport(w io.Writer, r *indexer.RewindReport) {
 	fmt.Fprintf(tw, "delete range\t%s\n", r.DeletedRange)
 	fmt.Fprintf(tw, "FINAL count in range (before)\t%d\n", r.Before.Count)
 	fmt.Fprintf(tw, "FINAL sum in range (before)\t%s\n", amountString(r.Before.Sum))
-	if r.After.Sum != nil {
+	switch {
+	case r.AfterTotalsUnavailable:
+		fmt.Fprintln(tw, "FINAL totals in range (after)\tunavailable — the measurement failed; the delete and re-anchor DID run")
+	case r.After.Sum != nil:
 		fmt.Fprintf(tw, "FINAL count in range (after)\t%d\n", r.After.Count)
 		fmt.Fprintf(tw, "FINAL sum in range (after)\t%s\n", amountString(r.After.Sum))
 	}
