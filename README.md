@@ -7,6 +7,10 @@ them with exact raw amounts and full provenance in ClickHouse for SQL
 inspection. Restarts resume from a durable block-number-and-hash checkpoint;
 replays collapse to one row per event. Dashboards come later.
 
+For a persistent single-host installation with database authentication,
+systemd, verification, upgrades, and recovery, see the
+[部署指南（中文）](docs/DEPLOYMENT.md).
+
 ## 1. Prerequisites
 
 - Go 1.27.1 (pinned by `go.mod`)
@@ -103,9 +107,10 @@ Behavior:
   continuous loop; `-from` now means "seed the checkpoint at N".
 - Mind the provider's per-query result cap. Infura, for example, rejects an
   `eth_getLogs` returning more than 10,000 logs. The default 5000-block
-  window is safe for USDT (its supply topics are rare); dense USDC ranges
-  may still need a smaller `window_blocks` until automatic window halving
-  lands.
+  window is safe for USDT (its supply topics are rare). Recognized result-cap
+  and query-timeout errors trigger automatic range halving down to
+  `window_floor`; failures at that floor stop sync without advancing the
+  checkpoint. Lower both bounds if the provider needs smaller ranges.
 
 ## 5. Reorg safety — mismatch halt and the rewind procedure
 
