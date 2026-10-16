@@ -5,10 +5,10 @@ current_phase: 3
 current_phase_name: Anchored Supply Reconciliation
 status: Phase 2 shipped — pushed to origin/main
 stopped_at: Phase 2 complete, ready to plan Phase 3
-last_updated: "2026-10-10T11:35:08.659Z"
-last_activity: 2026-10-10
-last_activity_desc: Phase 2 complete, transitioned to Phase 3
-state_head: a279898d11038d305e237b5ac081fcf085a0ca10
+last_updated: "2026-10-16T08:56:20.022Z"
+last_activity: 2026-10-16
+last_activity_desc: "Completed quick task 261016-bmv: deployment guide and PR preparation"
+state_head: 65575dda1f53b2255f60475ba89573567d0b0b71
 progress:
   total_phases: 4
   completed_phases: 2
@@ -31,7 +31,7 @@ See: .planning/PROJECT.md (updated 2026-10-08)
 Phase: 3 — Anchored Supply Reconciliation
 Plan: Not started
 Status: Phase 2 shipped — pushed to origin/main
-Last activity: 2026-10-10 — Phase 2 complete, transitioned to Phase 3
+Last activity: 2026-10-16 — Completed quick task 261016-bmv: deployment guide and PR preparation
 
 Progress: [█████░░░░░] 50%
 
@@ -93,6 +93,12 @@ None yet.
 
 - Phase 1: Verify deployed-contract event fixtures and chosen provider's historical logs before accepting decoder behavior.
 - Phase 3: Verify historical block-specific `totalSupply()` support and choose a canonical supply anchor before claiming absolute supply.
+
+### Quick Tasks Completed
+
+| # | Description | Date | Commit | Directory |
+|---|-------------|------|--------|-----------|
+| 261016-bmv | Add a Chinese deployment guide and open a PR to main | 2026-10-16 | 65575dd | [261016-bmv-create-a-deployment-guide-on-a-new-branc](./quick/261016-bmv-create-a-deployment-guide-on-a-new-branc/) |
 
 ## Deferred Items
 
